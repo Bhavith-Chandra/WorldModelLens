@@ -5,8 +5,8 @@
 [![PyPI Version](https://img.shields.io/pypi/v/world-model-lens.svg)](https://pypi.org/project/world-model-lens/)
 [![Python Versions](https://img.shields.io/pypi/pyversions/world-model-lens.svg)](https://pypi.org/project/world-model-lens/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Tests](https://github.com/your-org/world_model_lens/workflows/CI/badge.svg)](https://github.com/your-org/world_model_lens/actions)
-[![Coverage](https://codecov.io/gh/your-org/world_model_lens/branch/main/graph/badge.svg)](https://codecov.io/gh/your-org/world_model_lens)
+[![Tests](https://github.com/Bhavith-Chandra/WorldModelLens/workflows/CI/badge.svg)](https://github.com/Bhavith-Chandra/WorldModelLens/actions)
+[![Coverage](https://codecov.io/gh/Bhavith-Chandra/WorldModelLens/branch/main/graph/badge.svg)](https://codecov.io/gh/Bhavith-Chandra/WorldModelLens)
 
 World Model Lens provides a unified, backend-agnostic interface for analyzing, probing, and understanding world models. It works with any model that implements latent state + dynamics — no RL assumptions required.
 
@@ -90,7 +90,7 @@ pip install world-model-lens
 ### From Source
 
 ```bash
-git clone https://github.com/your-org/world_model_lens
+git clone https://github.com/Bhavith-Chandra/WorldModelLens
 cd world_model_lens
 pip install -e ".[dev]"
 ```
@@ -517,7 +517,7 @@ Contributions are welcome! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for gui
 
 ```bash
 # Set up development environment
-git clone https://github.com/your-org/world_model_lens
+git clone https://github.com/Bhavith-Chandra/WorldModelLens
 cd world_model_lens
 pip install -e ".[dev]"
 
@@ -540,7 +540,7 @@ If you use World Model Lens in your research, please cite:
   title = {World Model Lens: Interpretability for Any World Model},
   author = {World Model Lens Team},
   year = {2024},
-  url = {https://github.com/your-org/world_model_lens}
+  url = {https://github.com/Bhavith-Chandra/WorldModelLens}
 }
 ```
 

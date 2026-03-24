@@ -6,7 +6,7 @@ Thank you for your interest in contributing to World Model Lens!
 
 1. Clone the repository:
 ```bash
-git clone https://github.com/your-org/world_model_lens
+git clone https://github.com/Bhavith-Chandra/WorldModelLens
 cd world_model_lens
 ```
 

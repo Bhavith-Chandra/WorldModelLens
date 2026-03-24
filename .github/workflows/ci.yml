@@ -42,10 +42,13 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - run: pip install -e ".[dev]"
       - run: pytest tests/ -v --cov=world_model_lens --cov-report=xml --cov-fail-under=90
+      - uses: codecov/codecov-action@v4
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
 
   test-gpu:
     runs-on: self-hosted
-    if: github.repository == 'anomalyco/world_model_lens'
+    if: github.repository == 'Bhavith-Chandra/WorldModelLens'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

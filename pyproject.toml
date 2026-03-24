@@ -81,9 +81,9 @@ api = [
 wml = "world_model_lens.cli.commands:app"
 
 [project.urls]
-Homepage = "https://github.com/your-org/world_model_lens"
+Homepage = "https://github.com/Bhavith-Chandra/WorldModelLens"
 Documentation = "https://worldmodellens.readthedocs.io"
-Repository = "https://github.com/your-org/world_model_lens"
+Repository = "https://github.com/Bhavith-Chandra/WorldModelLens"
 
 [build-system]
 requires = ["hatchling"]
