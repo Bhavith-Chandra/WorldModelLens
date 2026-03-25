@@ -234,17 +234,39 @@ wm.run_with_hooks(observations, fwd_hooks=[("block.hook_resid_post", hook_fn)])
 | Feature | Description |
 |---------|-------------|
 | **Linear Probing** | Train probes on latent representations |
+| **Ridge/Logistic Regression** | Regularized probing with CV hyperparameter tuning |
+| **Cross-Modal Probing** | Probe across observation modalities (vision, text) |
+| **Semantic Probes (DINO/CLIP)** | Vision-language concept alignment |
 | **Temporal Memory** | Analyze memory retention over time |
 | **Geometry Analysis** | PCA, clustering, manifold analysis |
 | **Concept Discovery** | Find semantic concepts in latent space |
 
-### Patching
+### Patching & Causal Analysis
 
 | Feature | Description |
 |---------|-------------|
 | **Activation Patching** | Replace activations during forward pass |
 | **Causal Tracing** | Trace causal pathways through the model |
 | **Dimensional Patching** | Test individual latent dimensions |
+| **Circuit Discovery** | Find important computation subgraphs |
+| **Circuit Comparison** | Compare circuits across models/trained variants |
+
+### Sparse Autoencoders
+
+| Feature | Description |
+|---------|-------------|
+| **SAE Training** | Train TopK ReLU sparse autoencoders |
+| **Feature Attribution** | Identify disentangled latent features |
+| **L0/Reconstruction Metrics** | Evaluate sparsity-quality tradeoff |
+
+### Benchmarks
+
+| Feature | Description |
+|---------|-------------|
+| **Probing Benchmarks** | Standard concept classification tasks |
+| **Latent Metrics** | MIG, DCI, SAP disentanglement scores |
+| **Causal Benchmarks** | Path patching evaluation |
+| **CartPole/Continuous Control** | RL benchmark environments |
 
 ### Branching
 
@@ -259,6 +281,9 @@ wm.run_with_hooks(observations, fwd_hooks=[("block.hook_resid_post", hook_fn)])
 |---------|-------------|
 | **Safety Audit** | Detect OOD states, instabilities |
 | **Belief Analysis** | Surprise, entropy, hallucination detection |
+| **Saliency Maps** | Gradient, occlusion, integrated gradients |
+| **Disentanglement Metrics** | MIG, DCI, SAP scores |
+| **Uncertainty Quantification** | Epistemic/aleatoric uncertainty in beliefs |
 | **Robustness Testing** | Adversarial perturbation analysis |
 
 ### Production Tools
@@ -287,24 +312,38 @@ world_model_lens/
 │   ├── generic_adapter.py    # Abstract base class
 │   ├── dreamerv3.py         # DreamerV3 implementation
 │   ├── dreamerv2.py         # DreamerV2 implementation
+│   ├── dreamerv1.py         # DreamerV1 implementation
 │   ├── tdmpc2.py            # TD-MPC2 implementation
 │   ├── iris.py              # IRIS transformer
-│   ├── video_adapter.py     # Video prediction adapter
-│   └── planning_adapter.py  # Planning model adapter
+│   ├── video_world_model.py # Video prediction adapter
+│   ├── toy_video_model.py   # Toy video model for testing
+│   └── toy_scientific_model.py # Scientific dynamics models
 │
 ├── analysis/                  # Analysis tools
-│   ├── belief_analyzer.py   # Surprise, concepts, saliency
+│   ├── belief_analyzer.py   # Surprise, concepts, saliency, hallucination
+│   ├── metrics.py           # Latent space metrics (MIG, DCI, SAP)
+│   ├── uncertainty.py       # Belief uncertainty quantification
+│   ├── continual_learning.py # Catastrophic forgetting detection
 │   └── multimodal.py         # Multi-modal support
 │
 ├── probing/                  # Probing tools
-│   ├── prober.py            # Linear probing
-│   ├── geometry.py          # Geometric analysis
-│   └── temporal_memory.py    # Memory analysis
+│   ├── prober.py            # Linear/ridge/logistic probing with CV
+│   ├── semantic_probes.py  # DINO/CLIP vision-language probes
+│   ├── crossmodal.py        # Cross-modal probing
+│   ├── geometry.py          # Geometric analysis (PCA, clustering)
+│   └── temporal_memory.py  # Memory retention analysis
 │
 ├── patching/                 # Patching tools
 │   ├── patcher.py           # Activation patching
 │   ├── causal_tracer.py     # Causal tracing
-│   └── dim_patcher.py       # Dimension patching
+│   ├── circuit.py           # Circuit discovery & comparison
+│   ├── dim_patcher.py       # Dimension patching
+│   └── sweep_result.py      # Patching sweep results
+│
+├── sae/                      # Sparse Autoencoders
+│   ├── trainer.py           # SAE training with TopK ReLU
+│   ├── evaluator.py         # SAE evaluation metrics
+│   └── sae.py               # SAE model definition
 │
 ├── branching/                # Branching tools
 │   ├── brancer.py           # Imagination branching
@@ -316,6 +355,10 @@ world_model_lens/
 │
 ├── benchmarks/               # Benchmarking
 │   ├── suite.py             # Evaluation suite
+│   ├── probing.py           # Probing benchmarks
+│   ├── cartpole.py          # CartPole benchmark
+│   ├── gridworld.py         # Gridworld benchmark
+│   ├── continuous_control.py # MuJoCo-style benchmarks
 │   └── perf_runner.py       # Performance profiling
 │
 ├── monitoring/               # Production monitoring
@@ -329,8 +372,14 @@ world_model_lens/
 ├── cli/                      # CLI tools
 │   └── commands.py         # Typer CLI commands
 │
-└── viz/                     # Visualization
-    └── ...                  # Plotting utilities
+├── causal/                   # Causal analysis
+│   ├── effect_estimator.py  # Causal effect estimation
+│   └── trajectory_attribution.py # Trajectory-level attribution
+│
+└── visualization/            # Visualization
+    ├── latent_plots.py      # Latent space visualizations
+    ├── prediction_plots.py  # Prediction visualizations
+    └── intervention_plots.py # Patching intervention plots
 ```
 
 ---
@@ -479,23 +528,6 @@ analyzer = BeliefAnalyzer(wm)
 surprise = analyzer.surprise_timeline(cache)
 ```
 
-### Imagination Branching
-
-```python
-from world_model_lens.branching import ImaginationBrancher
-
-brancer = ImaginationBrancher(wm)
-
-# Branch at a specific state
-branch = brancer.create_branch(traj, branch_point=5)
-
-# Try different actions
-for action_sequence in candidate_actions:
-    forked = branch.fork()
-    imagined = wm.imagine(forked.initial_state, horizon=10, actions=action_sequence)
-    scores.append(evaluate(imagined))
-```
-
 ### Causal Tracing
 
 ```python
@@ -507,6 +539,73 @@ results = tracer.trace(
     corrupted_cache=corrupted_cache,
     layers=["encoder", "dynamics", "decoder"],
 )
+```
+
+### Circuit Discovery
+
+```python
+from world_model_lens.patching import CircuitDiscovery
+
+circuit_finder = CircuitDiscovery(wm)
+circuit = circuit_finder.discover_circuit(
+    cache=cache,
+    metric_fn=lambda x: x['z_posterior'].mean(),
+    components=['encoder', 'dynamics', 'decoder'],
+)
+print(f"Found {len(circuit.nodes)} nodes, {len(circuit.edges)} edges")
+```
+
+### Sparse Autoencoder Training
+
+```python
+from world_model_lens.sae import SAETrainer
+
+trainer = SAETrainer(latent_dim=256, sae_dim=1024)
+sae = trainer.train(
+    wm=wm,
+    cache=cache,
+    component='h',
+    num_steps=10000,
+)
+
+# Evaluate SAE
+from world_model_lens.sae import SAEEvaluator
+evaluator = SAEEvaluator(sae)
+metrics = evaluator.compute_metrics(cache, component='h')
+print(f"L0: {metrics['l0']:.2f}, Reconstruct: {metrics['reconstruction_error']:.4f}")
+```
+
+### Probing with Cross-Validation
+
+```python
+from world_model_lens.probing import LatentProber
+
+prober = LatentProber(seed=42, n_folds=5)
+activations = cache['h']  # [T, D]
+labels = torch.randint(0, 3, (T,))  # 3 classes
+
+result = prober.train_probe(
+    activations=activations,
+    labels=labels.numpy(),
+    concept_name='speed',
+    activation_name='h',
+    probe_type='ridge'
+)
+print(f"Accuracy: {result.accuracy:.3f} ± {result.std:.3f}")
+```
+
+### Disentanglement Metrics
+
+```python
+from world_model_lens.analysis import BeliefAnalyzer
+
+analyzer = BeliefAnalyzer(wm)
+factors = {
+    'velocity': torch.randn(100, 1),
+    'position': torch.randn(100, 1),
+}
+result = analyzer.disentanglement_score(cache, factors=factors)
+print(f"MIG: {result.scores['MIG']:.3f}, DCI: {result.scores['DCI']:.3f}")
 ```
 
 ---
