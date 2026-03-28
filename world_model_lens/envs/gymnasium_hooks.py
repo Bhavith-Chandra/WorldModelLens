@@ -19,7 +19,7 @@ Usage:
         obs, reward, done, info = wm_env.step(action)
 """
 
-from typing import Any, Dict, Optional, Tuple, Union, Callable, TYPE_CHECKING
+from typing import Any, Dict, Optional, Tuple, Union, Callable, TYPE_CHECKING, List
 import numpy as np
 import torch
 from dataclasses import dataclass

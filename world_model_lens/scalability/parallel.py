@@ -196,7 +196,8 @@ def _worker_patching_chunk(
 ) -> Dict[Tuple[str, int], "PatchResult"]:
     """Process a chunk of patching tasks."""
     results = {}
-    for comp, t in tqdm(tasks, desc=f"Patching {comp}"):
+    # Use a static description for the progress bar; per-item names aren't available
+    for comp, t in tqdm(tasks, desc="Patching chunk"):
         result = patcher.patch_state(
             config.clean_cache,
             config.corrupted_cache,
@@ -297,7 +298,7 @@ class GradientCheckpointedModel:
     ) -> Dict[str, torch.Tensor]:
         """Compute saliency with gradient checkpointing."""
         self.wm.adapter.train()
-        obs.requires_grad_(True)
+        observations.requires_grad_(True)
 
         if method == "grad":
             output = self.wm.run_with_cache(observations)[0]

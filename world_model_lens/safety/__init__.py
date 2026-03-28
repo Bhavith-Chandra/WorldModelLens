@@ -7,12 +7,15 @@ Includes:
 """
 
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple, TYPE_CHECKING
 import torch
 import numpy as np
 
 from world_model_lens.core.activation_cache import ActivationCache
 from world_model_lens.core.latent_trajectory import LatentTrajectory
+
+if TYPE_CHECKING:
+    from world_model_lens.hooked_world_model import HookedWorldModel
 
 
 @dataclass

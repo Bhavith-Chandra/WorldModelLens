@@ -9,12 +9,21 @@ import json
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from tqdm import tqdm
+
+
+if TYPE_CHECKING:
+    from world_model_lens.hooked_world_model import HookedWorldModel
+    from world_model_lens.patching.patcher import PatchingSweepResult, PatchResult
+    from world_model_lens.patching.patcher import TemporalPatcher
+    from world_model_lens.probing.prober import ProbeResult
+    from world_model_lens.core.activation_cache import ActivationCache
+    from world_model_lens.core.world_trajectory import WorldTrajectory
 
 
 @dataclass
