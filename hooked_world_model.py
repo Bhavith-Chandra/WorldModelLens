@@ -51,27 +51,19 @@ from __future__ import annotations
 
 import contextlib
 import uuid
+from collections.abc import Callable
 from pathlib import Path
 from typing import (
     Any,
-    Callable,
-    Dict,
-    Iterator,
-    List,
-    Optional,
-    Set,
-    Tuple,
-    Type,
-    Union,
 )
 
 import torch
 from torch import Tensor
-from world_model_lens.backends.base import WorldModelAdapter
 
+from world_model_lens.backends.base_adapter import WorldModelAdapter
 from world_model_lens.core.activation_cache import ActivationCache
 from world_model_lens.core.config import WorldModelConfig
-from world_model_lens.core.hooks import HookContext, HookFn, HookPoint, HookRegistry
+from world_model_lens.core.hooks import HookContext, HookPoint, HookRegistry
 from world_model_lens.core.latent_state import LatentState
 from world_model_lens.core.latent_trajectory import LatentTrajectory
 from world_model_lens.utils.logging import get_logger
@@ -84,10 +76,10 @@ log = get_logger(__name__)
 
 #: Global mapping from backend name → adapter *class*.
 #: Register custom backends with ``BACKEND_REGISTRY["my_backend"] = MyAdapter``.
-BACKEND_REGISTRY: Dict[str, Type[WorldModelAdapter]] = {}
+BACKEND_REGISTRY: dict[str, type[WorldModelAdapter]] = {}
 
 
-def register_backend(name: str) -> Callable[[Type[WorldModelAdapter]], Type[WorldModelAdapter]]:
+def register_backend(name: str) -> Callable[[type[WorldModelAdapter]], type[WorldModelAdapter]]:
     """Class decorator to register a backend under *name*.
 
     Examples
@@ -97,7 +89,7 @@ def register_backend(name: str) -> Callable[[Type[WorldModelAdapter]], Type[Worl
     ...     ...
     """
 
-    def decorator(cls: Type[WorldModelAdapter]) -> Type[WorldModelAdapter]:
+    def decorator(cls: type[WorldModelAdapter]) -> type[WorldModelAdapter]:
         BACKEND_REGISTRY[name] = cls
         return cls
 
@@ -186,7 +178,7 @@ class HookedWorldModel:
             return p.device
         return torch.device("cpu")
 
-    def to(self, device: Union[str, torch.device]) -> "HookedWorldModel":
+    def to(self, device: str | torch.device) -> HookedWorldModel:
         """Move the adapter and internal state to *device*.  Returns ``self``."""
         dev = torch.device(device)
         self._adapter.to(dev)
@@ -203,8 +195,8 @@ class HookedWorldModel:
         t: int,
         tensor: Tensor,
         ctx: HookContext,
-        cache: Optional[ActivationCache],
-        names_filter: Optional[Set[str]],
+        cache: ActivationCache | None,
+        names_filter: set[str] | None,
     ) -> Tensor:
         """Apply all matching registry hooks, then optionally cache the result.
 
@@ -255,8 +247,8 @@ class HookedWorldModel:
         self,
         obs_seq: Tensor,
         action_seq: Tensor,
-        cache: Optional[ActivationCache],
-        names_filter: Optional[Set[str]],
+        cache: ActivationCache | None,
+        names_filter: set[str] | None,
         no_grad: bool = True,
     ) -> LatentTrajectory:
         """Internal forward pass over an observation–action sequence.
@@ -285,13 +277,13 @@ class HookedWorldModel:
         T = obs_seq.shape[0]
         ctx_mgr = torch.no_grad() if no_grad else contextlib.nullcontext()
 
-        states: List[LatentState] = []
+        states: list[LatentState] = []
         h: Tensor = self._adapter.initial_state()
-        z: Optional[Tensor] = None  # z_{t-1}; populated from t=0 onward
+        z: Tensor | None = None  # z_{t-1}; populated from t=0 onward
 
         with ctx_mgr:
             for t in range(T):
-                traj_so_far: Optional[LatentTrajectory] = (
+                traj_so_far: LatentTrajectory | None = (
                     LatentTrajectory(
                         states=list(states),
                         env_name="",
@@ -321,7 +313,7 @@ class HookedWorldModel:
                     h = self._apply_and_cache("rnn.h", 0, h, ctx, cache, names_filter)
                     # Convention: at t=0 the prior is identical to the
                     # posterior (no KL penalty on the first step).
-                    z_prior_logits: Optional[Tensor] = None  # resolved after posterior
+                    z_prior_logits: Tensor | None = None  # resolved after posterior
                 else:
                     # Use action from the *previous* timestep.
                     a_prev = action_seq[t - 1]
@@ -381,10 +373,10 @@ class HookedWorldModel:
                 # ----------------------------------------------------
                 # 5. Optional heads — each fires its own hook point.
                 # ----------------------------------------------------
-                reward_val: Optional[float] = None
-                cont_val: Optional[float] = None
-                actor_logits_out: Optional[Tensor] = None
-                value_val: Optional[float] = None
+                reward_val: float | None = None
+                cont_val: float | None = None
+                actor_logits_out: Tensor | None = None
+                value_val: float | None = None
 
                 # reward_pred
                 try:
@@ -421,7 +413,7 @@ class HookedWorldModel:
                 # ----------------------------------------------------
                 # 6. Build LatentState
                 # ----------------------------------------------------
-                a_t: Optional[Tensor] = action_seq[t].detach() if t < len(action_seq) else None
+                a_t: Tensor | None = action_seq[t].detach() if t < len(action_seq) else None
                 state = LatentState(
                     h_t=h.detach(),
                     z_posterior=z_post_prob.detach(),
@@ -451,9 +443,9 @@ class HookedWorldModel:
         self,
         obs_seq: Tensor,
         action_seq: Tensor,
-        names_filter: Optional[Union[List[str], Set[str]]] = None,
-        device: Optional[Union[str, torch.device]] = None,
-    ) -> Tuple[LatentTrajectory, ActivationCache]:
+        names_filter: list[str] | set[str] | None = None,
+        device: str | torch.device | None = None,
+    ) -> tuple[LatentTrajectory, ActivationCache]:
         """Run the full forward pass and return a trajectory + activation cache.
 
         Parameters
@@ -484,7 +476,7 @@ class HookedWorldModel:
         obs_seq = obs_seq.to(dev)
         action_seq = action_seq.to(dev)
 
-        filter_set: Optional[Set[str]] = set(names_filter) if names_filter is not None else None
+        filter_set: set[str] | None = set(names_filter) if names_filter is not None else None
         cache = ActivationCache()
         traj = self._run_forward(
             obs_seq,
@@ -499,9 +491,9 @@ class HookedWorldModel:
         self,
         obs_seq: Tensor,
         action_seq: Tensor,
-        fwd_hooks: List[HookPoint],
+        fwd_hooks: list[HookPoint],
         return_cache: bool = False,
-    ) -> Union[LatentTrajectory, Tuple[LatentTrajectory, ActivationCache]]:
+    ) -> LatentTrajectory | tuple[LatentTrajectory, ActivationCache]:
         """Register *fwd_hooks* temporarily, run the forward pass, then remove them.
 
         Hooks in *fwd_hooks* are prepended to the permanent registry for the
@@ -539,7 +531,7 @@ class HookedWorldModel:
         for hp in fwd_hooks:
             self._registry._hooks.insert(0, hp)
 
-        cache: Optional[ActivationCache] = ActivationCache() if return_cache else None
+        cache: ActivationCache | None = ActivationCache() if return_cache else None
         try:
             traj = self._run_forward(
                 obs_seq,
@@ -565,8 +557,8 @@ class HookedWorldModel:
     def imagine(
         self,
         start_state: LatentState,
-        action_sequence: Optional[Tensor] = None,
-        policy: Optional[Callable[[Tensor, Tensor], Tensor]] = None,
+        action_sequence: Tensor | None = None,
+        policy: Callable[[Tensor, Tensor], Tensor] | None = None,
         horizon: int = 50,
         temperature: float = 1.0,
     ) -> LatentTrajectory:
@@ -617,7 +609,7 @@ class HookedWorldModel:
 
         n_steps = min(horizon, len(action_sequence)) if action_sequence is not None else horizon
 
-        states: List[LatentState] = []
+        states: list[LatentState] = []
 
         for step in range(n_steps):
             # ---- select action ----------------------------------------
@@ -651,10 +643,10 @@ class HookedWorldModel:
             z_next = self._registry.apply("z_posterior", step, z_next, ctx)
 
             # ---- optional heads ---------------------------------------
-            reward_val: Optional[float] = None
-            cont_val: Optional[float] = None
-            actor_logits_out: Optional[Tensor] = None
-            value_val: Optional[float] = None
+            reward_val: float | None = None
+            cont_val: float | None = None
+            actor_logits_out: Tensor | None = None
+            value_val: float | None = None
 
             try:
                 r = self._adapter.reward_pred(h_next, z_next)
@@ -749,7 +741,7 @@ class HookedWorldModel:
     # ------------------------------------------------------------------
 
     @property
-    def named_weights(self) -> Dict[str, Tensor]:
+    def named_weights(self) -> dict[str, Tensor]:
         """All weight matrices from the adapter, plus convenient stacked forms.
 
         Returns every parameter tensor with ``ndim >= 2`` (matrices, not bias
@@ -774,8 +766,8 @@ class HookedWorldModel:
         rnn.weight_hh_l0    torch.Size([768, 512])
         rnn._stacked        torch.Size([1536, 768])   ← stacked form
         """
-        result: Dict[str, Tensor] = {}
-        prefix_groups: Dict[str, List[Tensor]] = {}
+        result: dict[str, Tensor] = {}
+        prefix_groups: dict[str, list[Tensor]] = {}
 
         for param_name, param in self._adapter.named_parameters():
             if param.ndim < 2:
@@ -807,7 +799,7 @@ class HookedWorldModel:
         cls,
         model_name: str,
         **kwargs: Any,
-    ) -> "HookedWorldModel":
+    ) -> HookedWorldModel:
         """Load a pre-trained world model from HuggingFace Hub.
 
         Parameters
@@ -832,12 +824,12 @@ class HookedWorldModel:
     @classmethod
     def from_checkpoint(
         cls,
-        path: Union[str, Path],
+        path: str | Path,
         backend: str,
-        cfg: Optional[WorldModelConfig] = None,
-        name: Optional[str] = None,
+        cfg: WorldModelConfig | None = None,
+        name: str | None = None,
         **kwargs: Any,
-    ) -> "HookedWorldModel":
+    ) -> HookedWorldModel:
         """Instantiate a :class:`HookedWorldModel` from a saved checkpoint.
 
         Looks up *backend* in :data:`BACKEND_REGISTRY` to find the correct

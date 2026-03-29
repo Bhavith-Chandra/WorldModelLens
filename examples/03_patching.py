@@ -7,10 +7,10 @@ This example demonstrates:
 4. Full patching sweep
 """
 
-import torch
 import numpy as np
+import torch
 
-from world_model_lens import HookedWorldModel, WorldModelConfig, HookPoint, HookContext
+from world_model_lens import HookContext, HookedWorldModel, HookPoint, WorldModelConfig
 from world_model_lens.backends.dreamerv3 import DreamerV3Adapter
 from world_model_lens.patching.patcher import TemporalPatcher
 
@@ -22,7 +22,7 @@ def main():
 
     cfg = WorldModelConfig(d_h=128, n_cat=16, n_cls=16, d_action=4, d_obs=12288)
     adapter = DreamerV3Adapter(cfg)
-    wm = HookedWorldModel(adapter=adapter, cfg=cfg)
+    wm = HookedWorldModel(adapter=adapter, config=cfg)
 
     print("\n[1] Creating clean and corrupted runs...")
 
