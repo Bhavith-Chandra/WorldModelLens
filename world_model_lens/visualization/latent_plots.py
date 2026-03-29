@@ -59,9 +59,14 @@ class LatentTrajectoryPlotter:
     ) -> torch.Tensor:
         """Extract latent states from trajectory.
 
+        Uses the real ``LatentState`` API: ``h_t`` for the recurrent state,
+        ``z_posterior`` for the stochastic latent.  Both are flattened to 1-D
+        before stacking so the returned tensor is always ``[T, d]``.
+
         Args:
-            trajectory: WorldTrajectory
-            component: Which component to extract
+            trajectory: LatentTrajectory
+            component: Which component to extract (``"z_posterior"``,
+                ``"z"``, ``"h"``, or ``"hidden"``).
 
         Returns:
             Tensor of shape [T, d_z]
@@ -69,15 +74,15 @@ class LatentTrajectoryPlotter:
         latents = []
 
         for state in trajectory.states:
-            if component == "z_posterior" or component == "z":
-                if state.obs_encoding is not None:
-                    latents.append(state.obs_encoding)
-                else:
-                    latents.append(state.state)
-            elif component == "h" or component == "hidden":
-                latents.append(state.state)
+            if component in ("z_posterior", "z"):
+                latents.append(state.z_posterior.flatten())
+            elif component in ("h", "hidden"):
+                latents.append(state.h_t.flatten())
+            elif component == "flat":
+                latents.append(state.flat)
             else:
-                latents.append(state.state)
+                # Fallback: concatenate h and z
+                latents.append(state.flat)
 
         return torch.stack(latents)
 
@@ -148,12 +153,12 @@ class LatentTrajectoryPlotter:
 
         latents_np = latents.numpy()
 
-        from sklearn.manifold import TSN
+        from sklearn.manifold import TSNE
 
-        tsne = TSN(
+        tsne = TSNE(
             n_components=2,
             perplexity=min(perplexity, len(latents_np) - 1),
-            n_iter=n_iter,
+            n_iter_without_progress=n_iter,
             random_state=42,
         )
 
@@ -228,16 +233,18 @@ class LatentTrajectoryPlotter:
         rewards = []
 
         for state in trajectory.states:
-            reward = state.predictions.get("reward")
+            # Use the real LatentState fields: reward_pred (predicted) or
+            # reward_real (ground-truth from env).  Prefer predicted.
+            reward = state.reward_pred if state.reward_pred is not None else state.reward_real
             if reward is not None:
                 if isinstance(reward, torch.Tensor):
                     rewards.append(reward.item())
                 else:
-                    rewards.append(reward)
+                    rewards.append(float(reward))
             else:
                 rewards.append(0.0)
 
-        return np.array(rewards)
+        return np.array(rewards, dtype=np.float32)
 
     def color_by_surprise(
         self,
@@ -348,3 +355,91 @@ class LatentTrajectoryPlotter:
         accelerations = torch.diff(velocities, dim=0).norm(dim=1)
 
         return accelerations.numpy()
+
+
+class SurpriseHeatmap:
+    """2-D heatmap of per-dimension KL divergence (surprise) over time.
+
+    Each cell ``[t, d]`` shows how much dimension *d* of the stochastic
+    latent contributed to the KL divergence at timestep *t*.  This is the
+    most important mechanistic-interpretability visualisation for world
+    models: it reveals *when* and *which* latent dimensions were surprised
+    by the actual observation.
+
+    The raw KL stored in the :class:`ActivationCache` (key ``"kl"``) is a
+    scalar per timestep.  ``SurpriseHeatmap`` instead computes the
+    *per-category* KL contribution from the cached ``"z_posterior"`` and
+    ``"z_prior"`` entries so that the heatmap has shape ``[T, n_cat]``.
+
+    Example::
+
+        heatmap = SurpriseHeatmap()
+        data = heatmap.compute(cache)
+        # data["matrix"] has shape [T, n_cat]
+        # data["timesteps"]  → [0, 1, …, T-1]
+        # data["kl_per_cat"] → same as matrix (alias)
+        # data["kl_total"]   → [T] scalar KL per step
+    """
+
+    @staticmethod
+    def compute(
+        cache: Any,
+        eps: float = 1e-8,
+    ) -> dict:
+        """Compute the ``[T, n_cat]`` surprise heatmap from *cache*.
+
+        Reads ``"z_posterior"`` and ``"z_prior"`` from *cache*.  If the
+        pre-computed ``"kl"`` scalar is present it is also included in the
+        output for convenience.
+
+        Args:
+            cache: :class:`ActivationCache` populated by
+                ``HookedWorldModel.run_with_cache()``.
+            eps: Numerical floor for log-probabilities.
+
+        Returns:
+            dict with keys:
+
+            * ``"matrix"``    — ``np.ndarray`` of shape ``[T, n_cat]``
+            * ``"timesteps"`` — ``np.ndarray`` of length T
+            * ``"kl_per_cat"``— alias for ``"matrix"``
+            * ``"kl_total"``  — ``np.ndarray`` of shape ``[T]`` (sum over cats)
+
+        Raises:
+            KeyError: If neither ``"z_posterior"`` nor ``"z_prior"`` are
+                present in *cache*.
+        """
+        # Collect timesteps that have both posterior and prior
+        post_ts = {t for (n, t) in cache.keys() if n == "z_posterior"}
+        prior_ts = {t for (n, t) in cache.keys() if n == "z_prior"}
+        shared = sorted(post_ts & prior_ts)
+
+        if not shared:
+            raise KeyError(
+                "SurpriseHeatmap requires 'z_posterior' and 'z_prior' "
+                "entries in the ActivationCache. Run run_with_cache() first."
+            )
+
+        rows: List[np.ndarray] = []
+        kl_totals: List[float] = []
+
+        for t in shared:
+            post = cache.get("z_posterior", t)  # [n_cat, n_cls]
+            prior = cache.get("z_prior", t)      # [n_cat, n_cls]
+
+            p = post.softmax(dim=-1).clamp(min=eps)   # [n_cat, n_cls]
+            q = prior.softmax(dim=-1).clamp(min=eps)  # [n_cat, n_cls]
+
+            # Per-category KL: [n_cat]  (sum over n_cls)
+            kl_cat = (p * (p.log() - q.log())).sum(dim=-1)
+            rows.append(kl_cat.detach().cpu().numpy())
+            kl_totals.append(kl_cat.sum().item())
+
+        matrix = np.stack(rows, axis=0)  # [T, n_cat]
+
+        return {
+            "matrix": matrix,
+            "timesteps": np.array(shared),
+            "kl_per_cat": matrix,           # alias
+            "kl_total": np.array(kl_totals),
+        }

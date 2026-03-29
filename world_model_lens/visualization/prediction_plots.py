@@ -200,21 +200,23 @@ class PredictionVisualizer:
         timesteps = []
 
         for t, state in enumerate(trajectory.states):
-            pred = state.predictions.get("reward_pred")
-            gt = state.predictions.get("reward")
+            # Real LatentState fields: reward_pred (model prediction) and
+            # reward_real (ground truth from the environment).
+            pred = state.reward_pred
+            gt = state.reward_real
 
             if pred is not None:
                 if isinstance(pred, torch.Tensor):
                     predicted.append(pred.item())
                 else:
-                    predicted.append(pred)
+                    predicted.append(float(pred))
                 timesteps.append(t)
 
             if gt is not None:
                 if isinstance(gt, torch.Tensor):
                     ground_truth.append(gt.item())
                 else:
-                    ground_truth.append(gt)
+                    ground_truth.append(float(gt))
 
         return {
             "timesteps": np.array(timesteps),
@@ -239,12 +241,15 @@ class PredictionVisualizer:
         latents = []
 
         for state in trajectory.states:
-            z = state.obs_encoding if state.obs_encoding is not None else state.state
+            # Use the correct LatentState API: z_posterior for the stochastic
+            # latent.  flatten() handles the [n_cat, n_cls] shape.
+            z = state.z_posterior.flatten()
 
             if dim is not None:
-                latents.append(z[..., dim].item() if z.dim() > 0 else z.item())
+                val = z[dim].item() if z.shape[0] > dim else 0.0
+                latents.append(val)
             else:
-                latents.append(z.flatten().tolist())
+                latents.append(z.tolist())
 
         if dim is not None:
             values = np.array(latents)

@@ -66,6 +66,11 @@ class WorldState:
     metadata: Dict[str, Any] = field(default_factory=dict)
 
     @property
+    def flat(self) -> torch.Tensor:
+        """Flattened core state tensor."""
+        return self.state.flatten()
+
+    @property
     def device(self) -> torch.device:
         """Device the state tensors are on."""
         return self.state.device

@@ -101,8 +101,8 @@ class InterventionVisualizer:
         divergence = {}
 
         for t in range(min(len(before_trajectory.states), len(after_trajectory.states))):
-            s_before = before_trajectory.states[t].state.flatten()
-            s_after = after_trajectory.states[t].state.flatten()
+            s_before = before_trajectory.states[t].flat
+            s_after = after_trajectory.states[t].flat
 
             div = torch.nn.functional.mse_loss(s_before, s_after).item()
             divergence[t] = div
@@ -155,8 +155,8 @@ class InterventionVisualizer:
         if timestep >= len(after_trajectory.states):
             timestep = len(after_trajectory.states) - 1
 
-        s_before = before_trajectory.states[timestep].state
-        s_after = after_trajectory.states[timestep].state
+        s_before = before_trajectory.states[timestep].flat
+        s_after = after_trajectory.states[timestep].flat
 
         diff = (s_before - s_after).abs()
 
@@ -182,19 +182,18 @@ class InterventionVisualizer:
             2D array [T, d_z] of effects
         """
         T = min(len(before_trajectory.states), len(after_trajectory.states))
-        d_z = before_trajectory.states[0].state.shape[-1]
+        # Flatten the first state to get the true feature count
+        d_z = before_trajectory.states[0].flat.shape[0]
 
         heatmap = np.zeros((T, d_z))
 
         for t in range(T):
-            s_before = before_trajectory.states[t].state
-            s_after = after_trajectory.states[t].state
+            s_before = before_trajectory.states[t].flat
+            s_after = after_trajectory.states[t].flat
 
-            if s_before.shape[-1] == d_z:
-                diff = (s_before - s_after).abs()
-                if diff.dim() > 1:
-                    diff = diff.squeeze(0)
-                heatmap[t, : len(diff)] = diff[:d_z].numpy() if len(diff) >= d_z else diff.numpy()
+            diff = (s_before - s_after).abs()
+            n = min(len(diff), d_z)
+            heatmap[t, :n] = diff[:n].detach().cpu().numpy()
 
         return heatmap
 
@@ -212,16 +211,13 @@ class InterventionVisualizer:
         Returns:
             Array of dimension importance scores
         """
-        d_z = trajectory.states[0].state.shape[-1]
+        # Flatten state to get true dimensionality
+        d_z = trajectory.states[0].flat.shape[0]
         importance = np.zeros(d_z)
 
         for state in trajectory.states:
-            s = state.state
-
-            if s.dim() > 1:
-                s = s.squeeze(0)
-
-            importance[: len(s)] += s.abs().numpy()[:d_z]
+            s = state.flat
+            importance[:len(s)] += s.abs().detach().cpu().numpy()[:d_z]
 
         return importance / max(len(trajectory.states), 1)
 
@@ -242,8 +238,8 @@ class InterventionVisualizer:
         div_curve = self.divergence_curve(before_trajectory, after_trajectory)
         cum_div = self.cumulative_divergence(before_trajectory, after_trajectory)
 
-        final_before = before_trajectory.states[-1].state
-        final_after = after_trajectory.states[-1].state
+        final_before = before_trajectory.states[-1].flat
+        final_after = after_trajectory.states[-1].flat
 
         return {
             "total_divergence": sum(div_curve.values()),
@@ -278,8 +274,8 @@ class InterventionVisualizer:
 
         for t in timesteps:
             if t < len(before_trajectory.states) and t < len(after_trajectory.states):
-                s_before = before_trajectory.states[t].state.norm().item()
-                s_after = after_trajectory.states[t].state.norm().item()
+                s_before = before_trajectory.states[t].flat.norm().item()
+                s_after = after_trajectory.states[t].flat.norm().item()
                 div = abs(s_before - s_after)
 
                 result["timesteps"].append(t)

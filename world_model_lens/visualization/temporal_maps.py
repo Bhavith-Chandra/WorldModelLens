@@ -9,6 +9,8 @@ from typing import Any, Dict, List, Optional, Tuple
 import torch
 import numpy as np
 
+from world_model_lens.core.hooks import HookPoint
+
 
 @dataclass
 class TemporalAttributionMatrix:
@@ -19,6 +21,29 @@ class TemporalAttributionMatrix:
     target_timesteps: np.ndarray
     max_attribution: float
     total_attribution: float
+
+
+def _make_ablate_hook(target_t: int):
+    """Factory that returns a hook zeroing activations at *target_t* only.
+
+    Using a factory avoids the classic closure-in-loop bug where all
+    closures capture the same loop variable by reference.
+    """
+    def hook(tensor: torch.Tensor, ctx) -> torch.Tensor:
+        if ctx.timestep == target_t:
+            return torch.zeros_like(tensor)
+        return tensor
+    return hook
+
+
+def _make_multi_ablate_hook(*target_ts: int):
+    """Factory that zeros activations at any of the given timesteps."""
+    ts = set(target_ts)
+    def hook(tensor: torch.Tensor, ctx) -> torch.Tensor:
+        if ctx.timestep in ts:
+            return torch.zeros_like(tensor)
+        return tensor
+    return hook
 
 
 class TemporalAttributionMap:
@@ -32,13 +57,14 @@ class TemporalAttributionMap:
 
         # Compute influence matrix
         obs = torch.randn(20, 3, 64, 64)
-        matrix = mapper.compute_influence_matrix(obs)
+        actions = torch.randn(20, d_action)
+        matrix = mapper.compute_influence_matrix(obs, actions)
 
         # Get influence from specific timestep
-        t5_influence = mapper.influence_from_timestep(obs, source_t=5)
+        t5_influence = mapper.influence_from_timestep(obs, actions, source_t=5)
 
         # Causal flow
-        flow = mapper.trace_causal_flow(obs, source_t=0, target_t=15)
+        flow = mapper.trace_causal_flow(obs, actions, source_t=0, target_t=15)
     """
 
     def __init__(self, world_model: Any):
@@ -53,6 +79,7 @@ class TemporalAttributionMap:
     def compute_influence_matrix(
         self,
         observations: torch.Tensor,
+        actions: torch.Tensor,
         target_metric: str = "state_norm",
     ) -> TemporalAttributionMatrix:
         """Compute full influence matrix.
@@ -61,6 +88,7 @@ class TemporalAttributionMap:
 
         Args:
             observations: Input observations
+            actions: Action sequence
             target_metric: Metric to measure influence on
 
         Returns:
@@ -69,21 +97,20 @@ class TemporalAttributionMap:
         T = observations.shape[0]
 
         # Get baseline
-        baseline_traj, _ = self.wm.run_with_cache(observations)
+        baseline_traj, _ = self.wm.run_with_cache(observations, actions)
 
         influence = np.zeros((T, T))
 
-        # For each source timestep
+        # For each source timestep, ablate z_posterior at that step and
+        # measure the downstream effect.
         for source_t in range(T):
-            # Ablate at source
-            def ablate_hook(tensor, ctx):
-                if ctx.timestep == source_t:
-                    return tensor * 0
-                return tensor
-
-            intervened_traj, _ = self.wm.run_with_advanced_hooks(
-                observations,
-                hook_specs={f"t={source_t}.z": ablate_hook},
+            hp = HookPoint(
+                name="z_posterior",
+                stage="post",
+                fn=_make_ablate_hook(source_t),
+            )
+            intervened_traj = self.wm.run_with_hooks(
+                observations, actions, fwd_hooks=[hp],
             )
 
             # Measure effect at each target
@@ -107,12 +134,14 @@ class TemporalAttributionMap:
     def influence_from_timestep(
         self,
         observations: torch.Tensor,
+        actions: torch.Tensor,
         source_t: int,
     ) -> np.ndarray:
         """Get influence from specific source timestep to all targets.
 
         Args:
             observations: Input observations
+            actions: Action sequence
             source_t: Source timestep
 
         Returns:
@@ -120,16 +149,15 @@ class TemporalAttributionMap:
         """
         T = observations.shape[0]
 
-        baseline_traj, _ = self.wm.run_with_cache(observations)
+        baseline_traj, _ = self.wm.run_with_cache(observations, actions)
 
-        def ablate_hook(tensor, ctx):
-            if ctx.timestep == source_t:
-                return tensor * 0
-            return tensor
-
-        intervened_traj, _ = self.wm.run_with_advanced_hooks(
-            observations,
-            hook_specs={f"t={source_t}.z": ablate_hook},
+        hp = HookPoint(
+            name="z_posterior",
+            stage="post",
+            fn=_make_ablate_hook(source_t),
+        )
+        intervened_traj = self.wm.run_with_hooks(
+            observations, actions, fwd_hooks=[hp],
         )
 
         influences = []
@@ -144,12 +172,14 @@ class TemporalAttributionMap:
     def influence_to_timestep(
         self,
         observations: torch.Tensor,
+        actions: torch.Tensor,
         target_t: int,
     ) -> np.ndarray:
         """Get influence to specific target timestep from all sources.
 
         Args:
             observations: Input observations
+            actions: Action sequence
             target_t: Target timestep
 
         Returns:
@@ -157,22 +187,20 @@ class TemporalAttributionMap:
         """
         T = observations.shape[0]
 
-        baseline_traj, _ = self.wm.run_with_cache(observations)
+        baseline_traj, _ = self.wm.run_with_cache(observations, actions)
 
         target_baseline = self._extract_metric(baseline_traj, target_t, "state_norm")
 
         influences = []
 
         for source_t in range(T):
-
-            def ablate_hook(tensor, ctx):
-                if ctx.timestep == source_t:
-                    return tensor * 0
-                return tensor
-
-            intervened_traj, _ = self.wm.run_with_advanced_hooks(
-                observations,
-                hook_specs={f"t={source_t}.z": ablate_hook},
+            hp = HookPoint(
+                name="z_posterior",
+                stage="post",
+                fn=_make_ablate_hook(source_t),
+            )
+            intervened_traj = self.wm.run_with_hooks(
+                observations, actions, fwd_hooks=[hp],
             )
 
             intervened_val = self._extract_metric(intervened_traj, target_t, "state_norm")
@@ -183,6 +211,7 @@ class TemporalAttributionMap:
     def trace_causal_flow(
         self,
         observations: torch.Tensor,
+        actions: torch.Tensor,
         source_t: int,
         target_t: int,
     ) -> Dict[int, float]:
@@ -192,15 +221,14 @@ class TemporalAttributionMap:
 
         Args:
             observations: Input observations
+            actions: Action sequence
             source_t: Source timestep
             target_t: Target timestep
 
         Returns:
             Dict mapping intermediate timesteps to their importance
         """
-        T = observations.shape[0]
-
-        baseline_traj, _ = self.wm.run_with_cache(observations)
+        baseline_traj, _ = self.wm.run_with_cache(observations, actions)
 
         baseline_target = self._extract_metric(baseline_traj, target_t, "state_norm")
 
@@ -208,15 +236,13 @@ class TemporalAttributionMap:
 
         # Check each intermediate timestep
         for mid_t in range(source_t + 1, target_t):
-
-            def path_hook(tensor, ctx):
-                if ctx.timestep == source_t or ctx.timestep == mid_t:
-                    return tensor * 0
-                return tensor
-
-            intervened_traj, _ = self.wm.run_with_advanced_hooks(
-                observations,
-                hook_specs={f"t={source_t}.z": path_hook},
+            hp = HookPoint(
+                name="z_posterior",
+                stage="post",
+                fn=_make_multi_ablate_hook(source_t, mid_t),
+            )
+            intervened_traj = self.wm.run_with_hooks(
+                observations, actions, fwd_hooks=[hp],
             )
 
             intervened_val = self._extract_metric(intervened_traj, target_t, "state_norm")
@@ -227,6 +253,7 @@ class TemporalAttributionMap:
     def find_critical_timesteps(
         self,
         observations: torch.Tensor,
+        actions: torch.Tensor,
         target_t: int,
         top_k: int = 3,
     ) -> List[Tuple[int, float]]:
@@ -234,13 +261,14 @@ class TemporalAttributionMap:
 
         Args:
             observations: Input observations
+            actions: Action sequence
             target_t: Target timestep
             top_k: Number of top timesteps to return
 
         Returns:
             List of (timestep, importance) tuples
         """
-        influences = self.influence_to_timestep(observations, target_t)
+        influences = self.influence_to_timestep(observations, actions, target_t)
 
         top_indices = np.argsort(influences)[-top_k:][::-1]
 
@@ -249,16 +277,18 @@ class TemporalAttributionMap:
     def temporal_gradient(
         self,
         observations: torch.Tensor,
+        actions: torch.Tensor,
     ) -> np.ndarray:
         """Compute temporal gradient (change in influence over time).
 
         Args:
             observations: Input observations
+            actions: Action sequence
 
         Returns:
             Array of gradients
         """
-        matrix = self.compute_influence_matrix(observations)
+        matrix = self.compute_influence_matrix(observations, actions)
 
         gradient = np.gradient(matrix.matrix, axis=1)
 
@@ -267,6 +297,7 @@ class TemporalAttributionMap:
     def causal_strength(
         self,
         observations: torch.Tensor,
+        actions: torch.Tensor,
         source_t: int,
         target_t: int,
     ) -> float:
@@ -274,13 +305,14 @@ class TemporalAttributionMap:
 
         Args:
             observations: Input observations
+            actions: Action sequence
             source_t: Source timestep
             target_t: Target timestep
 
         Returns:
             Causal strength value
         """
-        influences = self.influence_from_timestep(observations, source_t)
+        influences = self.influence_from_timestep(observations, actions, source_t)
 
         if target_t < len(influences):
             return influences[target_t]
@@ -293,7 +325,7 @@ class TemporalAttributionMap:
         timestep: int,
         metric: str,
     ) -> float:
-        """Extract metric from trajectory."""
+        """Extract metric from trajectory using the real LatentState API."""
         if timestep < 0:
             timestep = len(trajectory.states) + timestep
 
@@ -303,30 +335,37 @@ class TemporalAttributionMap:
         state = trajectory.states[timestep]
 
         if metric == "state_norm":
-            return state.state.norm().item()
-        elif metric == "obs_norm":
-            if state.obs_encoding is not None:
-                return state.obs_encoding.norm().item()
+            # Use .flat (concatenation of h_t and z_posterior)
+            return state.flat.norm().item()
+        elif metric == "h_norm":
+            return state.h_t.norm().item()
+        elif metric == "z_norm":
+            return state.z_posterior.flatten().norm().item()
         elif metric == "reward":
-            return state.predictions.get("reward", torch.tensor(0.0)).item()
+            r = state.reward_pred
+            if r is not None:
+                return float(r) if not isinstance(r, torch.Tensor) else r.item()
+            return 0.0
 
         return 0.0
 
     def to_attention_style(
         self,
         observations: torch.Tensor,
+        actions: torch.Tensor,
         normalize: bool = True,
     ) -> np.ndarray:
         """Convert to attention-style matrix (normalized, softmax-like).
 
         Args:
             observations: Input observations
+            actions: Action sequence
             normalize: Whether to normalize
 
         Returns:
             Attention-style matrix
         """
-        matrix = self.compute_influence_matrix(observations)
+        matrix = self.compute_influence_matrix(observations, actions)
 
         attn = matrix.matrix.copy()
 
