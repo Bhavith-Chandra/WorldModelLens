@@ -1,6 +1,7 @@
 """DreamerV3 adapter implementation."""
 
 from typing import Dict, List, Optional, Tuple
+
 import torch
 import torch.nn as nn
 
@@ -275,8 +276,23 @@ class DreamerV3Adapter(WorldModelAdapter):
         obs_encoding = self.encoder(obs, h_prev[0])
         return obs_encoding, obs_encoding
 
-    def transition_fn(self, h: torch.Tensor, z: torch.Tensor, action: torch.Tensor) -> torch.Tensor:
-        """GRU transition."""
+    def transition(
+        self,
+        h: torch.Tensor,
+        z: torch.Tensor,
+        action: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        """RSSM transition: GRU update from (h, z, action) -> h_next."""
+        if h.dim() == 1:
+            h = h.unsqueeze(0)
+        if z.dim() == 1:
+            z = z.unsqueeze(0)
+        if z.dim() == 3:
+            z = z.reshape(z.shape[0], -1)
+        if action is None:
+            action = torch.zeros(h.shape[0], self.config.d_action, device=h.device, dtype=h.dtype)
+        elif action.dim() == 1:
+            action = action.unsqueeze(0)
         return self.transition_layer(h, z, action)
 
     def dynamics(self, h: torch.Tensor, action: Optional[torch.Tensor] = None) -> torch.Tensor:

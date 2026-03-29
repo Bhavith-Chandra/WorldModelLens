@@ -7,8 +7,8 @@ This example demonstrates the basic workflow:
 4. Train a linear probe on cached activations
 """
 
-import torch
 import numpy as np
+import torch
 
 from world_model_lens import HookedWorldModel, WorldModelConfig
 from world_model_lens.backends.dreamerv3 import DreamerV3Adapter
@@ -31,7 +31,7 @@ def main():
     adapter = DreamerV3Adapter(cfg)
     print("\n[2] DreamerV3Adapter initialized")
 
-    wm = HookedWorldModel(adapter=adapter, cfg=cfg, name="quickstart")
+    wm = HookedWorldModel(adapter=adapter, config=cfg, name="quickstart")
     print("\n[3] HookedWorldModel wrapper created")
 
     T, C, H, W = 10, 3, 64, 64

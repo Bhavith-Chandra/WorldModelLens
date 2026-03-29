@@ -67,8 +67,8 @@ from typing import (
 
 import torch
 from torch import Tensor
-
 from world_model_lens.backends.base import WorldModelAdapter
+
 from world_model_lens.core.activation_cache import ActivationCache
 from world_model_lens.core.config import WorldModelConfig
 from world_model_lens.core.hooks import HookContext, HookFn, HookPoint, HookRegistry
@@ -96,9 +96,11 @@ def register_backend(name: str) -> Callable[[Type[WorldModelAdapter]], Type[Worl
     ... class MyDreamerAdapter(WorldModelAdapter):
     ...     ...
     """
+
     def decorator(cls: Type[WorldModelAdapter]) -> Type[WorldModelAdapter]:
         BACKEND_REGISTRY[name] = cls
         return cls
+
     return decorator
 
 
@@ -106,8 +108,9 @@ def register_backend(name: str) -> Callable[[Type[WorldModelAdapter]], Type[Worl
 # Internal helpers
 # ---------------------------------------------------------------------------
 
+
 def _kl_categorical(
-    post: Tensor,   # [n_cat, n_cls] — probabilities (post-softmax)
+    post: Tensor,  # [n_cat, n_cls] — probabilities (post-softmax)
     prior: Tensor,  # [n_cat, n_cls] — probabilities (post-softmax)
     eps: float = 1e-8,
 ) -> Tensor:
@@ -125,6 +128,7 @@ def _safe_scalar(t: Tensor) -> float:
 # ---------------------------------------------------------------------------
 # HookedWorldModel
 # ---------------------------------------------------------------------------
+
 
 class HookedWorldModel:
     """Interpretability wrapper around any :class:`WorldModelAdapter`.
@@ -283,7 +287,7 @@ class HookedWorldModel:
 
         states: List[LatentState] = []
         h: Tensor = self._adapter.initial_state()
-        z: Optional[Tensor] = None         # z_{t-1}; populated from t=0 onward
+        z: Optional[Tensor] = None  # z_{t-1}; populated from t=0 onward
 
         with ctx_mgr:
             for t in range(T):
@@ -293,7 +297,8 @@ class HookedWorldModel:
                         env_name="",
                         episode_id="partial",
                     )
-                    if states else None
+                    if states
+                    else None
                 )
                 ctx = HookContext(
                     timestep=t,
@@ -305,9 +310,7 @@ class HookedWorldModel:
                 # 1. Encode observation  →  "encoder.out"
                 # ----------------------------------------------------
                 obs_emb = self._adapter.encode(obs_seq[t])
-                obs_emb = self._apply_and_cache(
-                    "encoder.out", t, obs_emb, ctx, cache, names_filter
-                )
+                obs_emb = self._apply_and_cache("encoder.out", t, obs_emb, ctx, cache, names_filter)
 
                 # ----------------------------------------------------
                 # 2. Recurrent state update  →  "rnn.h"
@@ -315,9 +318,7 @@ class HookedWorldModel:
                 #    At t>0: dynamics_step(h_{t-1}, z_{t-1}, a_{t-1}).
                 # ----------------------------------------------------
                 if t == 0:
-                    h = self._apply_and_cache(
-                        "rnn.h", 0, h, ctx, cache, names_filter
-                    )
+                    h = self._apply_and_cache("rnn.h", 0, h, ctx, cache, names_filter)
                     # Convention: at t=0 the prior is identical to the
                     # posterior (no KL penalty on the first step).
                     z_prior_logits: Optional[Tensor] = None  # resolved after posterior
@@ -327,9 +328,7 @@ class HookedWorldModel:
                     h, z_prior_raw = self._adapter.dynamics_step(h, z, a_prev)  # type: ignore[arg-type]
 
                     # Hook: rnn.h  (post-GRU, pre-posterior)
-                    h = self._apply_and_cache(
-                        "rnn.h", t, h, ctx, cache, names_filter
-                    )
+                    h = self._apply_and_cache("rnn.h", t, h, ctx, cache, names_filter)
 
                     # Hook: z_prior.logits
                     z_prior_raw = self._apply_and_cache(
@@ -358,13 +357,15 @@ class HookedWorldModel:
                 z_post_prob = self._apply_and_cache(
                     "z_posterior", t, z_post_prob, ctx, cache, names_filter
                 )
-                z = z_post_prob   # carry forward for next dynamics step
+                z = z_post_prob  # carry forward for next dynamics step
 
                 # At t=0: prior ≡ posterior (KL₀ = 0 by convention)
                 if t == 0:
                     z_prior_logits = z_post_raw
                     z_prior_prob = z_post_prob
-                    if cache is not None and (names_filter is None or "z_prior.logits" in names_filter):
+                    if cache is not None and (
+                        names_filter is None or "z_prior.logits" in names_filter
+                    ):
                         cache["z_prior.logits", 0] = z_prior_logits.detach()
                     if cache is not None and (names_filter is None or "z_prior" in names_filter):
                         cache["z_prior", 0] = z_prior_prob.detach()
@@ -380,17 +381,15 @@ class HookedWorldModel:
                 # ----------------------------------------------------
                 # 5. Optional heads — each fires its own hook point.
                 # ----------------------------------------------------
-                reward_val:       Optional[float] = None
-                cont_val:         Optional[float] = None
+                reward_val: Optional[float] = None
+                cont_val: Optional[float] = None
                 actor_logits_out: Optional[Tensor] = None
-                value_val:        Optional[float] = None
+                value_val: Optional[float] = None
 
                 # reward_pred
                 try:
                     r = self._adapter.reward_pred(h, z_post_prob)
-                    r = self._apply_and_cache(
-                        "reward_pred", t, r, ctx, cache, names_filter
-                    )
+                    r = self._apply_and_cache("reward_pred", t, r, ctx, cache, names_filter)
                     reward_val = _safe_scalar(r)
                 except NotImplementedError:
                     pass
@@ -398,9 +397,7 @@ class HookedWorldModel:
                 # cont_pred
                 try:
                     c = self._adapter.cont_pred(h, z_post_prob)
-                    c = self._apply_and_cache(
-                        "cont_pred", t, c, ctx, cache, names_filter
-                    )
+                    c = self._apply_and_cache("cont_pred", t, c, ctx, cache, names_filter)
                     cont_val = _safe_scalar(c)
                 except NotImplementedError:
                     pass
@@ -408,9 +405,7 @@ class HookedWorldModel:
                 # actor.logits
                 try:
                     al = self._adapter.actor(h, z_post_prob)
-                    al = self._apply_and_cache(
-                        "actor.logits", t, al, ctx, cache, names_filter
-                    )
+                    al = self._apply_and_cache("actor.logits", t, al, ctx, cache, names_filter)
                     actor_logits_out = al.detach()
                 except NotImplementedError:
                     pass
@@ -418,9 +413,7 @@ class HookedWorldModel:
                 # value_pred
                 try:
                     v = self._adapter.value(h, z_post_prob)
-                    v = self._apply_and_cache(
-                        "value_pred", t, v, ctx, cache, names_filter
-                    )
+                    v = self._apply_and_cache("value_pred", t, v, ctx, cache, names_filter)
                     value_val = _safe_scalar(v)
                 except NotImplementedError:
                     pass
@@ -428,11 +421,7 @@ class HookedWorldModel:
                 # ----------------------------------------------------
                 # 6. Build LatentState
                 # ----------------------------------------------------
-                a_t: Optional[Tensor] = (
-                    action_seq[t].detach()
-                    if t < len(action_seq)
-                    else None
-                )
+                a_t: Optional[Tensor] = action_seq[t].detach() if t < len(action_seq) else None
                 state = LatentState(
                     h_t=h.detach(),
                     z_posterior=z_post_prob.detach(),
@@ -492,15 +481,14 @@ class HookedWorldModel:
         torch.Size([T, 32, 32])
         """
         dev = torch.device(device) if device is not None else self._device
-        obs_seq   = obs_seq.to(dev)
+        obs_seq = obs_seq.to(dev)
         action_seq = action_seq.to(dev)
 
-        filter_set: Optional[Set[str]] = (
-            set(names_filter) if names_filter is not None else None
-        )
+        filter_set: Optional[Set[str]] = set(names_filter) if names_filter is not None else None
         cache = ActivationCache()
         traj = self._run_forward(
-            obs_seq, action_seq,
+            obs_seq,
+            action_seq,
             cache=cache,
             names_filter=filter_set,
             no_grad=True,
@@ -544,7 +532,7 @@ class HookedWorldModel:
         >>> hp = HookPoint("z_posterior", "post", zero_out, timestep=5)
         >>> traj = wm.run_with_hooks(obs_seq, actions, [hp])
         """
-        obs_seq    = obs_seq.to(self._device)
+        obs_seq = obs_seq.to(self._device)
         action_seq = action_seq.to(self._device)
 
         # Prepend temporary hooks so they fire BEFORE permanent ones.
@@ -554,7 +542,8 @@ class HookedWorldModel:
         cache: Optional[ActivationCache] = ActivationCache() if return_cache else None
         try:
             traj = self._run_forward(
-                obs_seq, action_seq,
+                obs_seq,
+                action_seq,
                 cache=cache,
                 names_filter=None,
                 no_grad=True,
@@ -562,9 +551,7 @@ class HookedWorldModel:
         finally:
             # Always clean up — remove exactly the hooks we added.
             temp_ids = {id(hp) for hp in fwd_hooks}
-            self._registry._hooks = [
-                h for h in self._registry._hooks if id(h) not in temp_ids
-            ]
+            self._registry._hooks = [h for h in self._registry._hooks if id(h) not in temp_ids]
 
         if return_cache:
             return traj, cache  # type: ignore[return-value]
@@ -628,11 +615,7 @@ class HookedWorldModel:
         h = start_state.h_t.to(self._device)
         z = start_state.z_posterior.to(self._device)
 
-        n_steps = (
-            min(horizon, len(action_sequence))
-            if action_sequence is not None
-            else horizon
-        )
+        n_steps = min(horizon, len(action_sequence)) if action_sequence is not None else horizon
 
         states: List[LatentState] = []
 
@@ -658,7 +641,7 @@ class HookedWorldModel:
             h_next, z_prior_raw = self._adapter.dynamics_step(h, z, a)
             ctx = HookContext(timestep=step, component="imagine")
 
-            h_next     = self._registry.apply("rnn.h",          step, h_next,     ctx)
+            h_next = self._registry.apply("rnn.h", step, h_next, ctx)
             z_prior_raw = self._registry.apply("z_prior.logits", step, z_prior_raw, ctx)
 
             if temperature != 1.0:
@@ -668,10 +651,10 @@ class HookedWorldModel:
             z_next = self._registry.apply("z_posterior", step, z_next, ctx)
 
             # ---- optional heads ---------------------------------------
-            reward_val:       Optional[float] = None
-            cont_val:         Optional[float] = None
+            reward_val: Optional[float] = None
+            cont_val: Optional[float] = None
             actor_logits_out: Optional[Tensor] = None
-            value_val:        Optional[float] = None
+            value_val: Optional[float] = None
 
             try:
                 r = self._adapter.reward_pred(h_next, z_next)
@@ -703,7 +686,7 @@ class HookedWorldModel:
 
             state = LatentState(
                 h_t=h_next.detach(),
-                z_posterior=z_next.detach(),   # imagined: posterior ≡ prior
+                z_posterior=z_next.detach(),  # imagined: posterior ≡ prior
                 z_prior=z_next.detach(),
                 timestep=step,
                 action=a.detach() if isinstance(a, Tensor) else torch.tensor(a),
@@ -715,10 +698,7 @@ class HookedWorldModel:
             states.append(state)
             h, z = h_next, z_next
 
-        env = (
-            start_state.metadata.get("env_name", self.name)
-            if start_state.metadata else self.name
-        )
+        env = start_state.metadata.get("env_name", self.name) if start_state.metadata else self.name
         return LatentTrajectory(
             states=states,
             env_name=env,

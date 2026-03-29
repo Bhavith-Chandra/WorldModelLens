@@ -5,6 +5,7 @@ no symlog, discrete z without symlog.
 """
 
 from typing import Dict, List, Optional, Tuple
+
 import torch
 import torch.nn as nn
 
@@ -179,7 +180,7 @@ class DreamerV2Adapter(WorldModelAdapter):
 
         self.encoder = DreamerV2Encoder(config)
         self.dynamics = DreamerV2DynamicsPredictor(config.d_h, config.d_z)
-        self.transition = DreamerV2Transition(config.d_z, config.d_action, config.d_h)
+        self.transition_layer = DreamerV2Transition(config.d_z, config.d_action, config.d_h)
         self.decoder = DreamerV2Decoder(config.d_h, config.d_z)
         self.reward_head = DreamerV2RewardHead(config.d_h, config.d_z)
         self.continue_head = DreamerV2ContinueHead(config.d_h, config.d_z)
