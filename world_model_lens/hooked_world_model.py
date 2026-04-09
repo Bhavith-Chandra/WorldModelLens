@@ -382,7 +382,10 @@ class HookedWorldModel:
         actions: Optional[torch.Tensor] = None,
         fwd_hooks: Optional[Union[List[HookPoint], Tuple[HookPoint, ...]]] = None,
         return_cache: bool = False,
-    ) -> Union[WorldTrajectory, Tuple[WorldTrajectory, ActivationCache]]:
+    ) -> Union[
+        Tuple[WorldTrajectory, LatentTrajectory],
+        Tuple[WorldTrajectory, LatentTrajectory, ActivationCache],
+    ]:
         """Run forward pass with temporary hooks.
 
         Hooks fire after each activation is computed but before it feeds
@@ -395,55 +398,72 @@ class HookedWorldModel:
             return_cache: If True, also return ActivationCache
 
         Returns:
-            WorldTrajectory, or (WorldTrajectory, ActivationCache) if return_cache
+            ``(WorldTrajectory, LatentTrajectory)`` by default, or
+            ``(WorldTrajectory, LatentTrajectory, ActivationCache)`` when
+            ``return_cache=True``.
         """
         if fwd_hooks:
             for hook in fwd_hooks:
                 self._hooks.register(hook)
 
         try:
-            traj, _, cache = self.run_with_cache(observations, actions)
+            traj, latent_traj, cache = self.run_with_cache(observations, actions)
         finally:
             if fwd_hooks:
                 self._hooks.clear()
 
         if return_cache:
-            return traj, cache
-        return traj
+            return traj, latent_traj, cache
+        return traj, latent_traj
 
     def imagine(
         self,
-        start_state: WorldState,
+        start_state: Union[WorldState, LatentState],
         actions: Optional[torch.Tensor] = None,
         horizon: int = 50,
         temperature: float = 1.0,
-    ) -> WorldTrajectory:
+    ) -> Tuple[WorldTrajectory, LatentTrajectory]:
         """Imagine forward from a starting state using dynamics model.
 
         Works with ANY world model - RL and non-RL. For non-RL models,
         actions are ignored.
 
         Args:
-            start_state: Starting WorldState
+            start_state: Starting WorldState or LatentState
             actions: Optional action sequence to execute (ignored for non-RL models)
             horizon: Number of imagination steps
             temperature: Sampling temperature for discrete states
 
         Returns:
-            Imagined WorldTrajectory
+            Tuple of imagined (WorldTrajectory, LatentTrajectory)
         """
         caps = self._get_capabilities()
-        state = start_state.state.clone()
-        z = start_state.obs_encoding if start_state.obs_encoding is not None else state
-        states = [start_state]
+
+        if isinstance(start_state, LatentState):
+            state = start_state.h_t.clone()
+            z = start_state.z_posterior.clone()
+            base_timestep = start_state.timestep
+            trajectory_so_far = []
+            env_name = start_state.metadata.get("env_name", self.name)
+        else:
+            state = start_state.state.clone()
+            z = start_state.obs_encoding.clone() if start_state.obs_encoding is not None else state.clone()
+            base_timestep = start_state.timestep
+            trajectory_so_far = [start_state]
+            env_name = start_state.metadata.get("env_name", self.name) if start_state.metadata else self.name
+
+        world_states = []
+        latent_states = []
 
         for t in range(horizon):
             action = None
             action_source = None
+            actor_logits = None
+            value_pred = None
+            step_timestep = t + base_timestep + 1
 
             if caps.uses_actions:
                 if actions is not None and t < len(actions):
-                    # Externally provided action
                     action = actions[t]
                     from world_model_lens.core.world_state import ActionSource
 
@@ -452,24 +472,19 @@ class HookedWorldModel:
                         temperature=None,
                     )
                 elif caps.has_actor:
-                    # Sample action from policy
                     try:
-                        policy_logits = self.adapter.actor_forward(
+                        actor_logits = self.adapter.actor_forward(
                             state.unsqueeze(0) if state.dim() == 1 else state,
                             z.unsqueeze(0) if z.dim() == 1 else z,
                         )
-                        if policy_logits is not None:
-                            # Sample action from policy
-                            if policy_logits.dim() > 2:
-                                policy_logits = policy_logits.squeeze(0)
+                        if actor_logits is not None:
+                            if actor_logits.dim() > 2:
+                                actor_logits = actor_logits.squeeze(0)
 
-                            # Handle different action distributions
-                            if policy_logits.shape[-1] == 1:
-                                # Continuous action
-                                action = torch.tanh(policy_logits)  # Assuming tanh squashing
+                            if actor_logits.shape[-1] == 1:
+                                action = torch.tanh(actor_logits)
                             else:
-                                # Discrete action
-                                probs = torch.softmax(policy_logits / temperature, dim=-1)
+                                probs = torch.softmax(actor_logits / temperature, dim=-1)
                                 action_idx = torch.multinomial(probs, 1).item()
                                 action = torch.tensor([action_idx], dtype=torch.long)
 
@@ -477,7 +492,7 @@ class HookedWorldModel:
 
                             action_source = ActionSource(
                                 source_type="policy_sampled",
-                                policy_logits=policy_logits.detach(),
+                                policy_logits=actor_logits.detach(),
                                 temperature=temperature,
                             )
                     except NotImplementedError:
@@ -494,43 +509,84 @@ class HookedWorldModel:
             prev_state = state.clone()
             state = self._call_transition(state, z, action)
 
-            # Apply transition hook for causality analysis
             transition_ctx = HookContext(
-                timestep=t + start_state.timestep + 1,
+                timestep=step_timestep,
                 component="transition",
-                trajectory_so_far=states,
+                trajectory_so_far=trajectory_so_far,
                 metadata={
-                    "s_t": state.clone(),  # Current state after transition
-                    "s_prev": prev_state,  # Previous state
-                    "a_t": action,  # Action used
-                    "z_t": z,  # Latent encoding
+                    "s_t": state.clone(),
+                    "s_prev": prev_state,
+                    "a_t": action,
+                    "z_t": z,
                 },
             )
-            state = self._hooks.apply(
-                "transition", t + start_state.timestep + 1, state, transition_ctx
-            )
+            state = self._hooks.apply("transition", step_timestep, state, transition_ctx)
 
             reward_pred = None
             if caps.has_reward_head and t > 0:
                 try:
-                    reward_pred = self.adapter.predict_reward(state, z)
+                    reward_pred = self.adapter.predict_reward(
+                        state.unsqueeze(0) if state.dim() == 1 else state,
+                        z.unsqueeze(0) if z.dim() == 1 else z,
+                    )
                     reward_pred = reward_pred.squeeze(0) if reward_pred is not None else None
                 except NotImplementedError:
                     pass
 
-            state_obj = WorldState(
-                state=state.clone(),
-                timestep=t + start_state.timestep + 1,
-                action=action.clone() if action is not None else None,
-                action_source=action_source,
-                reward_pred=reward_pred,
-            )
-            states.append(state_obj)
+            if caps.has_critic:
+                try:
+                    if hasattr(self.adapter, "critic_forward"):
+                        value_pred = self.adapter.critic_forward(
+                            state.unsqueeze(0) if state.dim() == 1 else state,
+                            z.unsqueeze(0) if z.dim() == 1 else z,
+                        )
+                    else:
+                        value_pred = self.adapter.predict_value(
+                            state.unsqueeze(0) if state.dim() == 1 else state,
+                            action,
+                        )
+                    value_pred = value_pred.squeeze(0) if value_pred is not None else None
+                except NotImplementedError:
+                    pass
 
-        return WorldTrajectory(
-            states=states[1:],
-            source="imagined",
-            fork_point=start_state.timestep,
+            action_tensor = action.detach().clone() if isinstance(action, torch.Tensor) else None
+            world_state = WorldState(
+                state=state.clone(),
+                timestep=step_timestep,
+                action=action_tensor,
+                action_source=action_source,
+                reward_pred=reward_pred.clone() if isinstance(reward_pred, torch.Tensor) else reward_pred,
+                value_pred=value_pred.clone() if isinstance(value_pred, torch.Tensor) else value_pred,
+            )
+            world_states.append(world_state)
+            trajectory_so_far.append(world_state)
+
+            latent_state = LatentState(
+                h_t=state.detach().clone(),
+                z_posterior=z.detach().clone(),
+                z_prior=z.detach().clone(),
+                timestep=step_timestep,
+                action=action_tensor.detach().clone() if action_tensor is not None else None,
+                reward_pred=reward_pred.detach().clone() if isinstance(reward_pred, torch.Tensor) else reward_pred,
+                value_pred=value_pred.detach().clone() if isinstance(value_pred, torch.Tensor) else value_pred,
+                actor_logits=actor_logits.detach().clone() if isinstance(actor_logits, torch.Tensor) else None,
+                metadata={"env_name": env_name},
+            )
+            latent_states.append(latent_state)
+
+        return (
+            WorldTrajectory(
+                states=world_states,
+                source="imagined",
+                fork_point=base_timestep,
+            ),
+            LatentTrajectory(
+                states=latent_states,
+                env_name=env_name,
+                imagined=True,
+                fork_point=base_timestep,
+                metadata={"source": "imagine"},
+            ),
         )
 
     def add_hook(self, hook: HookPoint) -> None:

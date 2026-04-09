@@ -27,8 +27,9 @@ def test_imagine_returns_correct_horizon(hooked_wm, fake_trajectory):
     """Test imagine returns correct horizon length."""
     start_state = fake_trajectory.states[0]
     horizon = 20
-    imagined = hooked_wm.imagine(start_state=start_state, horizon=horizon)
-    assert imagined.length == horizon
+    world_imagined, latent_imagined = hooked_wm.imagine(start_state=start_state, horizon=horizon)
+    assert world_imagined.length == horizon
+    assert latent_imagined.length == horizon
 
 
 def test_named_weights_accessible(hooked_wm):
@@ -287,7 +288,7 @@ def test_imagine_samples_actions_from_policy():
     start_ws = WorldState(state=start_state, timestep=0)
 
     # Imagine without providing actions - should sample from policy
-    imagined = wm.imagine(start_state=start_ws, horizon=5)
+    imagined, latent_imagined = wm.imagine(start_state=start_ws, horizon=5)
 
     # Check that actions were sampled
     for i, state in enumerate(imagined.states):
@@ -347,7 +348,7 @@ def test_imagine_uses_provided_actions():
 
     # Provide actions explicitly
     actions = torch.randn(3, cfg.d_action)
-    imagined = wm.imagine(start_state=start_ws, actions=actions, horizon=3)
+    imagined, latent_imagined = wm.imagine(start_state=start_ws, actions=actions, horizon=3)
 
     # Check that provided actions were used
     for i, state in enumerate(imagined.states):
@@ -356,6 +357,16 @@ def test_imagine_uses_provided_actions():
         assert state.action_source.source_type == "externally_provided"
         # Should match the provided action
         assert torch.allclose(state.action, actions[i])
+
+
+
+def test_imagine_accepts_latent_start_state(hooked_wm, fake_obs_seq, fake_action_seq):
+    """Imagine should accept LatentState as the starting point."""
+    _, latent_traj, _ = hooked_wm.run_with_cache(fake_obs_seq, fake_action_seq)
+    world_imagined, latent_imagined = hooked_wm.imagine(start_state=latent_traj.states[0], horizon=4)
+
+    assert world_imagined.length == 4
+    assert latent_imagined.length == 4
 
 
 def test_transition_hook_applies():
