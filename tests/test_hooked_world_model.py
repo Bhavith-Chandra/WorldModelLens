@@ -10,18 +10,18 @@ from world_model_lens.backends.base_adapter import WorldModelAdapter, WorldModel
 
 def test_run_with_cache_returns_correct_length(hooked_wm, fake_obs_seq, fake_action_seq):
     """Test run_with_cache returns trajectory of correct length."""
-    traj, cache = hooked_wm.run_with_cache(fake_obs_seq, fake_action_seq)
+    traj, latent_traj, cache = hooked_wm.run_with_cache(fake_obs_seq, fake_action_seq)
     assert traj.length == 10
     assert len(cache.timesteps) == 10
 
 
 def test_run_with_cache_caches_all_components(hooked_wm, fake_obs_seq, fake_action_seq):
     """Test cache contains all expected components."""
-    traj, cache = hooked_wm.run_with_cache(fake_obs_seq, fake_action_seq)
+    traj, latent_traj, cache = hooked_wm.run_with_cache(fake_obs_seq, fake_action_seq)
     assert "state" in cache.component_names
     assert "z_posterior" in cache.component_names
     assert "z_prior" in cache.component_names
-
+    assert latent_traj.length == traj.length
 
 def test_imagine_returns_correct_horizon(hooked_wm, fake_trajectory):
     """Test imagine returns correct horizon length."""
@@ -218,7 +218,7 @@ def test_run_with_cache_falls_back_to_predict_value_for_legacy_adapter():
 
     observations = torch.randn(3, cfg.d_obs)
     actions = torch.randn(3, cfg.d_action)
-    _, cache = wm.run_with_cache(observations, actions)
+    _, _, cache = wm.run_with_cache(observations, actions)
 
     assert len(adapter.value_calls) == 3
     assert "value" in cache.component_names
@@ -226,7 +226,7 @@ def test_run_with_cache_falls_back_to_predict_value_for_legacy_adapter():
 
 def test_run_with_cache_tracks_action_sources(hooked_wm, fake_obs_seq, fake_action_seq):
     """Test that run_with_cache properly tracks action sources."""
-    traj, _ = hooked_wm.run_with_cache(fake_obs_seq, fake_action_seq)
+    traj, _, _ = hooked_wm.run_with_cache(fake_obs_seq, fake_action_seq)
 
     for state in traj.states:
         if state.has_action():
@@ -420,7 +420,7 @@ def test_transition_hook_applies():
 
     observations = torch.randn(2, cfg.d_obs)
     actions = torch.randn(2, cfg.d_action)
-    traj, _ = wm.run_with_cache(observations, actions)
+    traj, _, _ = wm.run_with_cache(observations, actions)
 
     # Should have called the hook for each timestep
     assert len(hook_calls) == 2

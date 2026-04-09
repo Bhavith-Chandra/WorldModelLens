@@ -15,6 +15,8 @@ if TYPE_CHECKING:
 
 from world_model_lens.core.hooks import HookContext, HookPoint, HookRegistry
 from world_model_lens.core.activation_cache import ActivationCache
+from world_model_lens.core.latent_state import LatentState
+from world_model_lens.core.latent_trajectory import LatentTrajectory
 from world_model_lens.core.world_state import WorldState
 from world_model_lens.core.world_trajectory import WorldTrajectory
 from world_model_lens.backends.base_adapter import WorldModelCapabilities
@@ -165,7 +167,7 @@ class HookedWorldModel:
         names_filter: Optional[List[str]] = None,
         device: Optional[torch.device] = None,
         store_logits: bool = True,
-    ) -> Tuple[WorldTrajectory, ActivationCache]:
+    ) -> Tuple[WorldTrajectory, LatentTrajectory, ActivationCache]:
         """Run forward pass with full activation caching.
 
         This method is backend-agnostic. It works with any world model
@@ -183,11 +185,12 @@ class HookedWorldModel:
             store_logits: Whether to store logits (for probing)
 
         Returns:
-            Tuple of (WorldTrajectory, ActivationCache)
+            Tuple of (WorldTrajectory, LatentTrajectory, ActivationCache)
         """
         T = observations.shape[0]
         cache = ActivationCache()
         states = []
+        latent_states = []
 
         caps = self._get_capabilities()
 
@@ -296,6 +299,22 @@ class HookedWorldModel:
                 )
                 action = action_for_transition
 
+            action_for_state = action.clone() if action is not None else None
+
+            latent_state = LatentState(
+                h_t=state.detach().clone(),
+                z_posterior=posterior.detach().clone(),
+                z_prior=prior.detach().clone(),
+                timestep=t,
+                action=action_for_state.detach().clone() if action_for_state is not None else None,
+                reward_pred=reward_pred.squeeze(0).detach().clone()
+                if reward_pred is not None
+                else None,
+                value_pred=value_pred.squeeze(0).detach().clone() if value_pred is not None else None,
+                obs_encoding=obs_encoding.detach().clone() if obs_encoding is not None else None,
+            )
+            latent_states.append(latent_state)
+
             next_state = self._call_transition(
                 state.unsqueeze(0) if state.dim() == 1 else state,
                 posterior.unsqueeze(0) if posterior.dim() == 1 else posterior,
@@ -317,7 +336,6 @@ class HookedWorldModel:
             )
             state = self._hooks.apply("transition", t, state, transition_ctx)
 
-            action_for_state = action.clone() if action is not None else None
             action_source = None
             if action_for_state is not None:
                 from world_model_lens.core.world_state import ActionSource
@@ -341,6 +359,12 @@ class HookedWorldModel:
             if z_current is not None:
                 z_current = posterior
 
+        latent_traj = LatentTrajectory(
+            states=latent_states,
+            env_name=self.name,
+            imagined=False,
+            metadata={"source": "run_with_cache"},
+        )
         traj = WorldTrajectory(
             states=states,
             source="real",
@@ -350,7 +374,7 @@ class HookedWorldModel:
             traj = traj.to_device(device)
             cache = cache.to_device(device)
 
-        return traj, cache
+        return traj, latent_traj, cache
 
     def run_with_hooks(
         self,
@@ -378,7 +402,7 @@ class HookedWorldModel:
                 self._hooks.register(hook)
 
         try:
-            traj, cache = self.run_with_cache(observations, actions)
+            traj, _, cache = self.run_with_cache(observations, actions)
         finally:
             if fwd_hooks:
                 self._hooks.clear()
