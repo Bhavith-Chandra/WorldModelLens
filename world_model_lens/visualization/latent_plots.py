@@ -27,7 +27,7 @@ class LatentTrajectoryPlotter:
 
         # Generate trajectory
         obs = torch.randn(20, 3, 64, 64)
-        traj, cache = world_model.run_with_cache(obs)
+        _, traj, cache = world_model.run_with_cache(obs)
 
         # PCA projection
         pca = plotter.project_pca(traj, n_components=2)
@@ -95,7 +95,7 @@ class LatentTrajectoryPlotter:
         """Project latent trajectory using PCA.
 
         Args:
-            trajectory: WorldTrajectory
+            trajectory: LatentTrajectory
             n_components: Number of PCA components
             component: Which latent component to use
 
@@ -138,7 +138,7 @@ class LatentTrajectoryPlotter:
         """Project latent trajectory using t-SNE.
 
         Args:
-            trajectory: WorldTrajectory
+            trajectory: LatentTrajectory
             perplexity: t-SNE perplexity
             n_iter: Number of iterations
             component: Which latent component to use
@@ -182,7 +182,7 @@ class LatentTrajectoryPlotter:
         """Project latent trajectory using UMAP.
 
         Args:
-            trajectory: WorldTrajectory
+            trajectory: LatentTrajectory
             n_neighbors: UMAP n_neighbors
             min_dist: UMAP min_dist
             component: Which latent component to use
@@ -225,7 +225,7 @@ class LatentTrajectoryPlotter:
         """Get colors based on reward values.
 
         Args:
-            trajectory: WorldTrajectory
+            trajectory: LatentTrajectory
 
         Returns:
             Array of reward values
@@ -254,7 +254,7 @@ class LatentTrajectoryPlotter:
         """Get colors based on surprise (KL divergence).
 
         Args:
-            trajectory: WorldTrajectory
+            trajectory: LatentTrajectory
             cache: ActivationCache
 
         Returns:
@@ -283,7 +283,7 @@ class LatentTrajectoryPlotter:
         """Plot multiple trajectories in same space.
 
         Args:
-            trajectories: List of WorldTrajectories
+            trajectories: List of LatentTrajectories
             labels: Labels for each trajectory
             method: Projection method ("pca", "tsne", "umap")
 
@@ -317,7 +317,7 @@ class LatentTrajectoryPlotter:
         """Compute velocity (change) between timesteps.
 
         Args:
-            trajectory: WorldTrajectory
+            trajectory: LatentTrajectory
             component: Which component
 
         Returns:
@@ -340,7 +340,7 @@ class LatentTrajectoryPlotter:
         """Compute acceleration (change in velocity).
 
         Args:
-            trajectory: WorldTrajectory
+            trajectory: LatentTrajectory
             component: Which component
 
         Returns:
