@@ -10,6 +10,7 @@ probing
 causal
 branching
 patching
+kv_cache
 monitoring
 envs
 cli

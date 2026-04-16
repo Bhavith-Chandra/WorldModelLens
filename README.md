@@ -600,6 +600,71 @@ imagined = wm.imagine(start_state=new_state, horizon=20)
 print(f"Imagined {imagined.length} steps into future")
 ```
 
+### KV Cache Hook (Transformer Memory Editing)
+
+Transformer-style world models often maintain a growing key/value (KV) memory
+that serves as the model's temporal context. World Model Lens exposes a
+dedicated hook point named `"kv_cache"` which runs once per timestep and is
+passed the full `ActivationCache`. This lets you inspect or mutate a model's
+memory (for example, "forgetting" a specific key) without re-running the
+entire forward pass.
+
+Hook signature
+
+```python
+```python
+# Hook signature: fn(cache: ActivationCache, ctx: HookContext) -> None
+def my_kv_hook(cache, ctx):
+    # prefer helpers rather than touching _store directly
+    cache.delete_kv(0, "k", 10)
+
+from world_model_lens import HookPoint
+# register the hook for a single timestep or a time slice
+hp = HookPoint(name="kv_cache", fn=my_kv_hook, timestep=10)
+wm.add_hook(hp)
+```
+```
+
+Examples
+
+- Create KV entries at a specific timestep:
+
+```python
+def create_kv(cache, ctx):
+    cache.set_kv(0, "k", ctx.timestep, torch.tensor([1.0, 1.0]))
+    cache.set_kv(0, "v", ctx.timestep, torch.tensor([0.5, 0.5]))
+
+wm.add_hook(HookPoint(name="kv_cache", fn=create_kv, timestep=1))
+```
+
+- Modify a KV entry created earlier:
+
+```python
+def bump_prev(cache, ctx):
+    prev = ctx.timestep - 1
+    val = cache.get_kv(0, "k", prev, None)
+    if val is not None:
+        cache.set_kv(0, "k", prev, val + 10.0)
+
+wm.add_hook(HookPoint(name="kv_cache", fn=bump_prev, timestep=2))
+```
+
+- Use a time slice to apply a hook across a range of timesteps:
+
+```python
+wm.add_hook(HookPoint(name="kv_cache", fn=my_kv_hook, time_slice=[5, 10]))
+```
+
+Notes
+
+- `HookPoint.fn` for `kv_cache` hooks receives `(ActivationCache, HookContext)`
+  instead of the usual `(tensor, HookContext)`. The hook system accepts this
+  pattern and will call your function with the cache when the `kv_cache`
+  component fires.
+- Currently examples mutate `ActivationCache._store` directly. You may add
+  helper methods (e.g., `get_kv`, `set_kv`, `delete_kv`) if you prefer a
+  public API that encapsulates naming conventions.
+
 ### Video Prediction Analysis
 
 ```python
@@ -699,6 +764,29 @@ factors = {
 }
 result = analyzer.disentanglement_score(cache, factors=factors)
 print(f"MIG: {result.scores['MIG']:.3f}, DCI: {result.scores['DCI']:.3f}")
+```
+
+### Unified Disentanglement Evaluation Suite
+
+For multi-component evaluation across `context_encoder`, `predictor`, `target_encoder`:
+
+```python
+from world_model_lens.analysis.metrics import DisentanglementEvaluationSuite
+
+suite = DisentanglementEvaluationSuite()
+result = suite.evaluate_components(
+    cache=cache,
+    factors=factors,
+    components=['context_encoder', 'predictor', 'target_encoder', 'z_posterior'],
+    metrics=['MIG', 'DCI', 'SAP']
+)
+
+# Per-component scores
+for comp, scores in result.component_results.items():
+    print(f"{comp} MIG: {scores['MIG']:.3f}")
+
+# Summary across all components
+print(f"Overall disentanglement: {result.summary_scores['DCI_disentanglement']:.3f}")
 ```
 
 ---

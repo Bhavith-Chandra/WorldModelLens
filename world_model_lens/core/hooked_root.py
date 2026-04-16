@@ -266,6 +266,10 @@ class HookedRootModule(nn.Module):
         elif isinstance(module, nn.MultiheadAttention):
             handle = module.register_forward_hook(create_hook(f"{name}.hook_attn", "forward"))
             self._hook_handles.append(handle)
+        elif isinstance(module, nn.Identity) and "hook_" in name:
+            # Native support for explicitly placed HookPoints using Identity
+            handle = module.register_forward_hook(create_hook(name, "forward"))
+            self._hook_handles.append(handle)
 
     # ==================== HOOK REGISTRATION API ====================
 

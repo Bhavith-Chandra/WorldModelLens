@@ -292,6 +292,7 @@ Each adapter exposes a `WorldModelCapabilities` descriptor (uses_actions, has_re
 | `04_branching.py` | Imagination branching |
 | `05_belief_analysis.py` | Surprise & belief tracking |
 | `06_disentanglement.py` | MIG/DCI/SAP metrics |
+| `11_unified_disentanglement.py` | Unified MIG/DCI/SAP across context_encoder, predictor, target_encoder |
 | `07_video_model.py` | Video prediction analysis |
 | `08_toy_video_world_model.py` | Toy video model demo |
 | `09_toy_scientific_dynamics.py` | Scientific simulation demo |

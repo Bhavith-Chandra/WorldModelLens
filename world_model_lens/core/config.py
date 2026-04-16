@@ -109,6 +109,11 @@ class WorldModelConfig:
     vocab_size: int = 512
     
     # I-JEPA specific
+    patch_size: int = 16
+    num_patches: int = 196
+    embed_dim: int = 192
+    context_mask_ratio: float = 0.85
+    target_mask_scale: float = 0.15
     predictor_embed_dim: int = 384
     predictor_depth: int = 4
     predictor_heads: int = 6

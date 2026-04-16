@@ -154,24 +154,6 @@ class ActivationCache:
         """Public helper to store a concrete tensor for (name, timestep)."""
         self[name, timestep] = value
 
-    def set_prior_equivalent(
-        self,
-        timestep: int,
-        logits: torch.Tensor,
-        probs: torch.Tensor,
-        names_filter: list[str] | None = None,
-    ) -> None:
-        """Store prior-equivalent entries for timestep when posterior==prior.
-
-        Writes both ``z_prior.logits`` and ``z_prior`` for convenience. If
-        *names_filter* is provided, only writes components present in the
-        filter.
-        """
-        if names_filter is None or "z_prior.logits" in names_filter:
-            self["z_prior.logits", timestep] = logits
-        if names_filter is None or "z_prior" in names_filter:
-            self["z_prior", timestep] = probs
-
     def __contains__(self, key: tuple[str, int]) -> bool:
         """Check if a key exists in the cache."""
         return key in self._store or key in self._evaluated
@@ -538,6 +520,41 @@ class ActivationCache:
         else:
             # For tensors, assume it's the mean
             return {"mean": value}
+
+    # KV helper methods -------------------------------------------------
+    def set_kv(self, layer: int, kind: str, timestep: int, tensor: torch.Tensor) -> None:
+        """Set a KV-style entry for a transformer-like adapter.
+
+        Args:
+            layer: Layer index (int).
+            kind: Either 'k' or 'v' (key or value).
+            timestep: Timestep index.
+            tensor: Tensor to store.
+        """
+        name = f"kv/l{layer}/{kind}"
+        self[name, timestep] = tensor
+
+    def get_kv(self, layer: int, kind: str, timestep: int, default: Any = None) -> Any:
+        """Get a KV entry if present, otherwise return default.
+
+        Returns the stored tensor (or distribution mean) following the same
+        semantics as __getitem__/_get_single.
+        """
+        try:
+            return self._get_single(f"kv/l{layer}/{kind}", timestep)
+        except KeyError:
+            return default
+
+    def delete_kv(self, layer: int, kind: str, timestep: int) -> None:
+        """Delete a KV entry if present.
+
+        This removes both stored and evaluated entries for the (name,timestep)
+        key so subsequent reads behave as-if the entry never existed.
+        """
+        name = f"kv/l{layer}/{kind}"
+        key = (name, timestep)
+        self._store.pop(key, None)
+        self._evaluated.pop(key, None)
 
     def is_distribution(self, name: str, timestep: int) -> bool:
         """Check if the cached value for (name, timestep) is a distribution.

@@ -1,18 +1,14 @@
 """Circuit discovery for world model mechanistic analysis."""
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional, Set, Tuple
-import torch
-from torch import Tensor
+from typing import Any
 
-try:
-    from tqdm import tqdm
-except ImportError:
-    tqdm = None
+import torch
 
 from world_model_lens.core.activation_cache import ActivationCache
 from world_model_lens.hooked_world_model import HookedWorldModel
-from world_model_lens.patching.causal_tracer import CausalTracer, AttributionResult
+from world_model_lens.patching.causal_tracer import CausalTracer
 
 
 def _get_device() -> torch.device:
@@ -28,7 +24,7 @@ class CircuitNode:
     importance: float
     in_degree: int
     out_degree: int
-    attributions: Dict[str, float] = field(default_factory=dict)
+    attributions: dict[str, float] = field(default_factory=dict)
 
 
 @dataclass
@@ -45,22 +41,22 @@ class CircuitEdge:
 class Circuit:
     """A discovered circuit subgraph."""
 
-    nodes: List[CircuitNode]
-    edges: List[CircuitEdge]
-    source_nodes: List[str]
-    target_nodes: List[str]
+    nodes: list[CircuitNode]
+    edges: list[CircuitEdge]
+    source_nodes: list[str]
+    target_nodes: list[str]
     faithfulness_score: float
     completeness: float
 
-    def to_adjacency_list(self) -> Dict[str, List[str]]:
+    def to_adjacency_list(self) -> dict[str, list[str]]:
         """Convert to adjacency list representation."""
-        adj = {node.name: [] for node in self.nodes}
+        adj: dict[str, list[str]] = {node.name: [] for node in self.nodes}
         for edge in self.edges:
             if edge.source in adj:
                 adj[edge.source].append(edge.target)
         return adj
 
-    def get_path(self, source: str, target: str) -> Optional[List[str]]:
+    def get_path(self, source: str, target: str) -> list[str] | None:
         """Find a path from source to target."""
         if source not in self.to_adjacency_list():
             return None
@@ -88,7 +84,7 @@ class Circuit:
 class CircuitDiscovery:
     """Discovery of computational circuits in world models."""
 
-    def __init__(self, wm: HookedWorldModel, device: Optional[torch.device] = None):
+    def __init__(self, wm: HookedWorldModel, device: torch.device | None = None):
         """Initialize circuit discovery.
 
         Args:
@@ -170,7 +166,7 @@ class CircuitDiscovery:
         self,
         cache: ActivationCache,
         metric_fn: Callable[[ActivationCache], float],
-    ) -> Dict[Tuple[str, str], float]:
+    ) -> dict[tuple[str, str], float]:
         """Compute attribution for all potential edges.
 
         Args:
@@ -181,7 +177,7 @@ class CircuitDiscovery:
             Dictionary mapping (source, target) to attribution strength.
         """
         components = self.tracer.get_component_order(cache)
-        edge_attributions: Dict[Tuple[str, str], float] = {}
+        edge_attributions: dict[tuple[str, str], float] = {}
 
         for i, source in enumerate(components):
             for target in components[i + 1 :]:
@@ -194,7 +190,7 @@ class CircuitDiscovery:
         self,
         cache: ActivationCache,
         threshold: float = 0.1,
-    ) -> List[Tuple[str, float]]:
+    ) -> list[tuple[str, float]]:
         """Find components with high cross-attention (important for outputs).
 
         Args:
@@ -208,9 +204,12 @@ class CircuitDiscovery:
         attention_scores = []
 
         for comp in components:
-            score = self.tracer.compute_single_attribution(
-                cache, comp, "z_posterior", lambda c: float(c.get(comp, 0).abs().sum())
-            )
+
+            def metric(c):
+                return float((c.get(comp, 0) or torch.tensor(0.0)).abs().sum())
+
+            score = self.tracer.compute_single_attribution(cache, comp, "z_posterior", metric)
+
             if score > threshold:
                 attention_scores.append((comp, score))
 
@@ -219,8 +218,8 @@ class CircuitDiscovery:
 
     def extract_subgraph(
         self,
-        nodes: List[str],
-        edges: Dict[Tuple[str, str], float],
+        nodes: list[str],
+        edges: dict[tuple[str, str], float],
     ) -> Circuit:
         """Extract a subgraph from given nodes and edges.
 
@@ -268,7 +267,7 @@ class CircuitDiscovery:
         self,
         cache: ActivationCache,
         metric_fn: Callable[[ActivationCache], float],
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """Analyze bottleneck nodes in the circuit.
 
         Args:
@@ -279,7 +278,7 @@ class CircuitDiscovery:
             List of bottleneck analysis results.
         """
         components = list(cache.component_names)
-        bottlenecks = []
+        bottlenecks: list[dict[str, Any]] = []
 
         clean_metric = metric_fn(cache)
 
@@ -311,12 +310,86 @@ class CircuitDiscovery:
         bottlenecks.sort(key=lambda x: x["importance"], reverse=True)
         return bottlenecks
 
+    def greedy_ablation_attention_heads(
+        self,
+        cache: ActivationCache,
+        prediction_types: dict[str, Callable[[ActivationCache], float]],
+        head_pattern: str = "attn_head",
+        threshold: float = 0.01,
+    ) -> dict[str, Circuit]:
+        """Greedy ablation over attention heads to find minimal subgraph per prediction type.
+
+        Args:
+            cache: Activation cache.
+            prediction_types: Dict of prediction type names to metric functions.
+            head_pattern: Pattern to identify attention head components.
+            threshold: Minimum drop threshold to stop ablation.
+
+        Returns:
+            Dict of prediction type to minimal Circuit.
+        """
+        all_heads = [comp for comp in cache.component_names if head_pattern in comp]
+        if not all_heads:
+            raise ValueError(f"No attention head components found with pattern '{head_pattern}'")
+
+        results = {}
+        for pred_type, metric_fn in prediction_types.items():
+            active_heads = set(all_heads)
+            clean_metric = metric_fn(cache)
+
+            while active_heads:
+                effects = []
+                for head in active_heads:
+                    effect = compute_lesion_effect(cache, head, metric_fn)
+                    effects.append((head, effect))
+
+                if not effects:
+                    break
+
+                effects.sort(key=lambda x: x[1])
+                least_important_head, smallest_effect = effects[0]
+                drop = smallest_effect / (clean_metric + 1e-8)
+                if drop > threshold:
+                    break
+                active_heads.remove(least_important_head)
+
+            nodes = [
+                CircuitNode(
+                    name=head,
+                    importance=0.0,
+                    in_degree=0,
+                    out_degree=0,
+                )
+                for head in sorted(active_heads)
+            ]
+            edges = []
+            for i in range(len(nodes) - 1):
+                edges.append(
+                    CircuitEdge(
+                        source=nodes[i].name,
+                        target=nodes[i + 1].name,
+                        strength=1.0,
+                    )
+                )
+            faithfulness = len(active_heads) / len(all_heads)
+            circuit = Circuit(
+                nodes=nodes,
+                edges=edges,
+                source_nodes=[nodes[0].name] if nodes else [],
+                target_nodes=[nodes[-1].name] if nodes else [],
+                faithfulness_score=faithfulness,
+                completeness=1.0,
+            )
+            results[pred_type] = circuit
+
+        return results
+
 
 class CircuitComparator:
     """Compare circuits across different world model types."""
 
     def __init__(self):
-        self.circuits: Dict[str, Circuit] = {}
+        self.circuits: dict[str, Circuit] = {}
 
     def add_circuit(self, name: str, circuit: Circuit) -> None:
         """Add a circuit to the comparator.
@@ -327,7 +400,7 @@ class CircuitComparator:
         """
         self.circuits[name] = circuit
 
-    def compare_structure(self) -> Dict[str, Any]:
+    def compare_structure(self) -> dict[str, Any]:
         """Compare structural properties of circuits.
 
         Returns:
@@ -348,8 +421,8 @@ class CircuitComparator:
 
     def find_common_subcircuit(
         self,
-        names: Optional[List[str]] = None,
-    ) -> Optional[Circuit]:
+        names: list[str] | None = None,
+    ) -> Circuit | None:
         """Find common subgraph across circuits.
 
         Args:
@@ -470,7 +543,7 @@ class SubgraphAnalyzer:
         return float(modularity)
 
     @staticmethod
-    def find_communities(circuit: Circuit) -> List[List[str]]:
+    def find_communities(circuit: Circuit) -> list[list[str]]:
         """Find communities in the circuit using greedy approach.
 
         Args:

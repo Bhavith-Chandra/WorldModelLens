@@ -7,6 +7,7 @@ from torch import Tensor
 
 from world_model_lens.core.hooks import HookRegistry, HookContext
 from world_model_lens.core.activation_cache import ActivationCache
+from typing import Any, cast
 
 
 class HookCacheManager:
@@ -49,3 +50,31 @@ class HookCacheManager:
             cache["z_prior.logits", timestep] = logits
         if names_filter is None or "z_prior" in names_filter:
             cache["z_prior", timestep] = probs
+
+    def apply_kv_hooks(
+        self,
+        cache: Optional[ActivationCache],
+        timestep: int,
+        ctx: HookContext,
+    ) -> None:
+        """Run hooks that operate on the KV-style cache.
+
+        This provides a dedicated hook point named "kv_cache". Hooks
+        registered at this component should accept the ActivationCache
+        and the HookContext and may mutate the cache in-place to emulate
+        editing a model's key/value memory without re-running the whole
+        sequence.
+
+        The expected hook signature is ``fn(cache: ActivationCache, ctx: HookContext) -> None``.
+        HookRegistry does not enforce types, so users may register such
+        functions with HookPoint(name="kv_cache", fn=..., timestep=...).
+        """
+        if cache is None:
+            return
+        hooks = self._registry.get_hooks_for("kv_cache", timestep)
+        for h in hooks:
+            # Allow the hook to mutate the cache in-place. HookPoint.fn is
+            # typed for tensor hooks; cast to Any to allow KV-cache hooks
+            # that accept (ActivationCache, HookContext).
+            fn = cast(Any, h.fn)
+            fn(cache, ctx)

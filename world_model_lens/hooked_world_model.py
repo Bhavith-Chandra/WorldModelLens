@@ -12,6 +12,7 @@ if TYPE_CHECKING:
     from world_model_lens.core.world_state import WorldState, WorldTrajectory, WorldDynamics
     from world_model_lens.core.world_trajectory import WorldTrajectory
     from world_model_lens.core.config import WorldModelConfig
+    from world_model_lens.core.latent_state import LatentState
 
 from world_model_lens.core.hooks import HookContext, HookPoint, HookRegistry
 from world_model_lens.core.activation_cache import ActivationCache
@@ -162,6 +163,33 @@ class HookedWorldModel:
 
         return decode(state)
 
+    def _build_state(
+        self,
+        h: torch.Tensor,
+        z_post_prob: torch.Tensor,
+        z_prior_prob: torch.Tensor,
+        t: int,
+        action_seq: Optional[torch.Tensor] = None,
+        reward_val: Optional[torch.Tensor] = None,
+        cont_val: Optional[torch.Tensor] = None,
+        actor_logits_out: Optional[torch.Tensor] = None,
+        value_val: Optional[torch.Tensor] = None,
+    ) -> Any:
+        """Helper to build a LatentState object. Used by ForwardRunner."""
+        from world_model_lens.core.latent_state import LatentState
+
+        return LatentState(
+            h_t=h,
+            z_posterior=z_post_prob,
+            z_prior=z_prior_prob,
+            timestep=t,
+            action=action_seq[t] if action_seq is not None and t < len(action_seq) else None,
+            reward_pred=reward_val,
+            cont_pred=cont_val,
+            value_pred=value_val,
+            actor_logits=actor_logits_out,
+        )
+
     @classmethod
     def from_checkpoint(
         cls,
@@ -182,6 +210,7 @@ class HookedWorldModel:
             HookedWorldModel instance
         """
         from world_model_lens.backends import REGISTRY as registry
+
         adapter_cls = registry.get(backend)
         adapter = adapter_cls(config) if config else adapter_cls.from_checkpoint(path)
 
@@ -522,6 +551,19 @@ class HookedWorldModel:
                     names_filter,
                 )
 
+            # Dedicated hook point for KV-style cache manipulation. Some
+            # transformer-based adapters maintain a growing key/value memory
+            # that users may want to edit without re-running the whole
+            # sequence. We expose a hook component named "kv_cache" which
+            # receives the full ActivationCache and can mutate it in-place.
+            manager = getattr(self, "_hook_cache_manager", None)
+            if manager is not None:
+                manager.apply_kv_hooks(
+                    cache,
+                    t,
+                    HookContext(timestep=t, component="kv_cache", trajectory_so_far=states),
+                )
+
             # Check for optional target encoder (e.g. for I-JEPA/JEPA models)
             if hasattr(self.adapter, "target_encode"):
                 target_encoding = self.adapter.target_encode(obs.unsqueeze(0))
@@ -531,7 +573,9 @@ class HookedWorldModel:
                         "target_encoding",
                         t,
                         target_encoding,
-                        HookContext(timestep=t, component="target_encoding", trajectory_so_far=states),
+                        HookContext(
+                            timestep=t, component="target_encoding", trajectory_so_far=states
+                        ),
                         cache,
                         names_filter,
                     )

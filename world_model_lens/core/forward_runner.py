@@ -10,6 +10,7 @@ from torch import Tensor
 from world_model_lens.core.hooks import HookContext
 from world_model_lens.core.activation_cache import ActivationCache
 from world_model_lens.core.latent_trajectory import LatentTrajectory
+from world_model_lens.core.types import WorldModelFamily
 
 
 class ForwardRunner:
@@ -40,7 +41,16 @@ class ForwardRunner:
         ctx_mgr = torch.no_grad() if no_grad else contextlib.nullcontext()
 
         states = []
-        h: Tensor = self.hooked._adapter.initial_state()
+
+        is_patch_axis = False
+        if hasattr(self.hooked, "config"):
+            is_patch_axis = getattr(self.hooked.config, "world_model_family", None) == WorldModelFamily.JEPA
+            
+        if is_patch_axis:
+            return self._run_forward_patch_axis(obs_seq, cache, names_filter, ctx_mgr)
+
+        adapter = getattr(self.hooked, "adapter", getattr(self.hooked, "_adapter", None))
+        h: Tensor = adapter.initial_state()
         z: Tensor | None = None
 
         manager = getattr(self.hooked, "_hook_cache_manager", None)
@@ -61,7 +71,8 @@ class ForwardRunner:
                 )
 
                 if manager is not None:
-                    obs_emb = self.hooked._adapter.encode(obs_seq[t])
+                    adapter = getattr(self.hooked, "adapter", getattr(self.hooked, "_adapter", None))
+                    obs_emb = adapter.encode(obs_seq[t])
                     obs_emb = manager.apply_and_cache(
                         "encoder.out", t, obs_emb, ctx, cache, names_filter
                     )
@@ -137,5 +148,96 @@ class ForwardRunner:
             states=states,
             env_name=self.hooked.name,
             episode_id=f"run_{uuid.uuid4().hex[:8]}",
+            imagined=False,
+        )
+
+    def _run_forward_patch_axis(
+        self,
+        obs_batch: Tensor,
+        cache: Optional[ActivationCache],
+        names_filter: Optional[Set[str]],
+        ctx_mgr: Any,
+    ) -> LatentTrajectory:
+        """Patch-Axis Mode: executes spatial masking loop concurrently.
+        
+        obs_batch is implicitly [B, C, H, W] for a single step (or unbatched).
+        """
+        states = []
+        adapter = getattr(self.hooked, "adapter", getattr(self.hooked, "_adapter", None))
+        manager = getattr(self.hooked, "_hook_cache_manager", None)
+        
+        with ctx_mgr:
+            # 1. Context Encoder
+            context_latents, _ = adapter.encode(obs_batch)
+            if manager is not None:
+                ctx = HookContext(timestep=0, component="forward", trajectory_so_far=[])
+                manager.apply_and_cache("encoder.out", 0, context_latents, ctx, cache, names_filter)
+            
+            # 2. Target Encoder (EMA)
+            target_reps = adapter.target_encode(obs_batch)
+            if manager is not None:
+                manager.apply_and_cache("target_encoder.out", 0, target_reps, ctx, cache, names_filter)
+            
+            # 3. Predictor 
+            # IJEPA Predictor expects (context, context_ids, target_ids)
+            # In validation/inference without explicit masks, we can predict all targets 
+            # or use the last generated masks from encode()
+            c_ids = adapter.last_context_ids
+            t_ids = adapter.last_target_ids
+            
+            if c_ids is None or t_ids is None:
+                # Fallback if encode() didn't cache spatial masks
+                N = getattr(adapter.config, "num_patches", 196)
+                c_ids = list(range(int(N * 0.85)))
+                t_ids = list(range(int(N * 0.85), N))
+            
+            # Predictor manual loop to expose predictor.layer_N
+            context_inputs = adapter.predictor.predictor_embed(context_latents)
+            context_inputs = context_inputs + adapter.predictor.pos_embed[:, c_ids, :]
+            
+            B = obs_batch.shape[0] if obs_batch.dim() == 4 else 1
+            target_tokens = adapter.predictor.mask_token.expand(B, len(t_ids), -1)
+            target_inputs = target_tokens + adapter.predictor.pos_embed[:, t_ids, :]
+            
+            x = torch.cat([context_inputs, target_inputs], dim=1)
+            
+            # Manually run predictor layer loop to cache intermediate layer states
+            for i, block in enumerate(adapter.predictor.blocks):
+                x = block(x)
+                if manager is not None:
+                    manager.apply_and_cache(f"predictor.layer_{i}", 0, x, ctx, cache, names_filter)
+                    
+            x = adapter.predictor.norm(x)
+            
+            # Predictor final projections
+            target_preds = x[:, len(c_ids):, :]
+            target_preds = adapter.predictor.predictor_project_back(target_preds)
+            if manager is not None:
+                manager.apply_and_cache("predictor.final", 0, target_preds, ctx, cache, names_filter)
+
+            # 4. Map output to LatentTrajectory across the spatial sequence (patches as timesteps)
+            # We align patch sequences to timesteps. 
+            num_targets = len(t_ids)
+            for t in range(num_targets):
+                h_patch = target_preds[:, t, :] if target_preds.dim() == 3 else target_preds[t]
+                
+                # Mock a LatentTrajectory spatial step
+                state = self.hooked._build_state(
+                    h=h_patch,
+                    z_post_prob=torch.zeros_like(h_patch),
+                    z_prior_prob=torch.zeros_like(h_patch),
+                    t=t,
+                    action_seq=None,
+                    reward_val=None,
+                    cont_val=None,
+                    actor_logits_out=None,
+                    value_val=None,
+                )
+                states.append(state)
+
+        return LatentTrajectory(
+            states=states,
+            env_name=self.hooked.name,
+            episode_id=f"run_spatial_{uuid.uuid4().hex[:8]}",
             imagined=False,
         )

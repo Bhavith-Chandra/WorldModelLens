@@ -50,11 +50,12 @@ examples/causal-analysis
 | 03 | `examples/03_patching.py` | Activation patching | Intermediate | None | `TemporalPatcher` | Recovery scores by component and timestep |
 | 04 | `examples/04_branching.py` | Imagination branching | Intermediate | None | `HookedWorldModel.imagine` | Divergence statistics across branches |
 | 05 | `examples/05_belief_analysis.py` | Surprise, saliency, hallucination | Intermediate | None | `BeliefAnalyzer` | Surprise peaks, top dimensions, saliency shapes |
-| 06 | `examples/06_disentanglement.py` | Factor structure | Intermediate | None | `BeliefAnalyzer` | MIG, DCI, SAP, factor-to-dimension assignments |
+| 06 | `examples/06_disentanglement.py` | Factor structure | Intermediate | None | `BeliefAnalyzer`, `DisentanglementEvaluationSuite` | MIG, DCI, SAP, factor-to-dimension assignments across components |
 | 07 | `examples/07_video_model.py` | Video prediction | Intermediate | None | `VideoWorldModelAdapter` | Cache contents for frame prediction |
 | 08 | `examples/08_toy_video_world_model.py` | Geometry and memory | Intermediate | None | `GeometryAnalyzer`, `TemporalMemoryProber` | PCA, trajectory metrics, memory retention |
 | 09 | `examples/09_toy_scientific_dynamics.py` | Scientific dynamics | Intermediate | None | `ToyScientificAdapter`, geometry + belief tools | Surprise and geometry comparisons across systems |
 | 10 | `examples/10_causal_engine.py` | Counterfactual engine | Advanced | None | `CounterfactualEngine`, `Intervention` | Intervention tables and divergence metrics |
+| 11 | `examples/11_unified_disentanglement.py` | Multi-component evaluation | Intermediate | None | `DisentanglementEvaluationSuite` | Unified MIG/DCI/SAP across context_encoder, predictor, target_encoder |
 
 ## Suggested Paths
 
