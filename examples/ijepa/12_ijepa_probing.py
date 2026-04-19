@@ -19,9 +19,29 @@ _CONCEPT_LABELS = {
     "left_half": "Left Half",
     "center_band": "Center Band",
 }
+_CLIP_CONCEPT_PROMPTS = {
+    "top_half": (
+        "image patches from the upper half of a picture",
+        "image patches from the lower half of a picture",
+    ),
+    "left_half": (
+        "image patches from the left side of a picture",
+        "image patches from the right side of a picture",
+    ),
+    "center_band": (
+        "image patches from the center of a picture",
+        "image patches from the edges of a picture",
+    ),
+}
 
 from world_model_lens import LatentProber
 from world_model_lens.analysis.metrics import DisentanglementEvaluationSuite
+
+try:
+    from world_model_lens.probing.semantic_probes import IJEPASemanticAligner
+    _SEMANTIC_AVAILABLE = True
+except Exception:
+    _SEMANTIC_AVAILABLE = False
 
 from utils import (
     OUTPUT_DIR,
@@ -323,6 +343,111 @@ def _write_summary(
     output_path.write_text("\n".join(lines), encoding="utf-8")
 
 
+def _run_semantic_probes(artifacts) -> dict | None:
+    """Run CLIP semantic alignment probes across all I-JEPA components.
+
+    Returns a dict mapping component name -> SemanticAlignmentResult,
+    or None when the transformers package is unavailable.
+    """
+    if not _SEMANTIC_AVAILABLE:
+        print("  [semantic] transformers not installed — skipping CLIP alignment probes.")
+        return None
+
+    try:
+        aligner = IJEPASemanticAligner()
+    except Exception as exc:
+        print(f"  [semantic] Could not initialise IJEPASemanticAligner: {exc}")
+        return None
+
+    results = {}
+    for component_name, component in artifacts.components.items():
+        labels = build_patch_labels(component.patch_ids, artifacts.grid_size)
+        cls_labels = {k: v for k, v in labels.items() if k in _CLIP_CONCEPT_PROMPTS}
+        try:
+            result = aligner.run(
+                raw_image=artifacts.raw_image,
+                activations=component.activations,
+                patch_ids=component.patch_ids,
+                grid_size=artifacts.grid_size,
+                concept_labels=cls_labels,
+                concept_prompts=_CLIP_CONCEPT_PROMPTS,
+                component_name=component_name,
+            )
+            results[component_name] = result
+            print(f"  [semantic] {component_name}: R²={result.r2_projection:.3f}  "
+                  + "  ".join(f"{c}={v:.3f}" for c, v in result.concept_text_alignments.items()))
+        except Exception as exc:
+            print(f"  [semantic] {component_name} failed: {exc}")
+
+    return results or None
+
+
+def _plot_semantic_alignment(semantic_results: dict, output_path: Path) -> None:
+    """Two-panel plot: concept-text cosine similarity + ridge projection R²."""
+    component_names = list(semantic_results.keys())
+    concepts = list(_CLIP_CONCEPT_PROMPTS.keys())
+    n_comps = len(component_names)
+
+    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+
+    # Left: concept-text cosine similarity bars
+    ax = axes[0]
+    bar_w = 0.22
+    x = np.arange(len(concepts))
+    for i, cname in enumerate(component_names):
+        res = semantic_results[cname]
+        vals = [res.concept_text_alignments.get(c, 0.0) for c in concepts]
+        offset = (i - n_comps / 2 + 0.5) * bar_w
+        color = _COMPONENT_COLORS.get(cname, f"C{i}")
+        bars = ax.bar(
+            x + offset, vals, bar_w,
+            label=cname.replace("_", " "), color=color, alpha=0.88, edgecolor="white",
+        )
+        for bar, val in zip(bars, vals, strict=False):
+            yoff = 0.012 if val >= 0 else -0.03
+            va = "bottom" if val >= 0 else "top"
+            ax.text(bar.get_x() + bar.get_width() / 2, val + yoff,
+                    f"{val:.2f}", ha="center", va=va, fontsize=8, fontweight="bold")
+    ax.axhline(0, color="#555", linewidth=1.0)
+    ax.set_xticks(x)
+    ax.set_xticklabels([_CONCEPT_LABELS[c] for c in concepts], fontsize=9)
+    ax.set_ylabel("Cosine Similarity (CLIP text ↔ projected I-JEPA direction)", fontsize=9)
+    ax.set_title(
+        "CLIP Text – I-JEPA Concept Direction Alignment\n"
+        "(positive = semantically aligned with CLIP's spatial understanding)",
+        fontweight="bold", fontsize=9,
+    )
+    ax.legend(fontsize=8, framealpha=0.9, loc="lower right")
+    ax.grid(axis="y", alpha=0.3, linewidth=0.7)
+    ax.spines[["top", "right"]].set_visible(False)
+
+    # Right: Ridge projection R² per component
+    ax2 = axes[1]
+    r2_vals = [semantic_results[c].r2_projection for c in component_names]
+    colors = [_COMPONENT_COLORS.get(c, "gray") for c in component_names]
+    bars2 = ax2.bar(range(len(component_names)), r2_vals, color=colors, alpha=0.88,
+                    edgecolor="white", width=0.5)
+    for bar, val in zip(bars2, r2_vals, strict=False):
+        ax2.text(bar.get_x() + bar.get_width() / 2, val + 0.01, f"{val:.3f}",
+                 ha="center", va="bottom", fontsize=9, fontweight="bold")
+    ax2.set_xticks(range(len(component_names)))
+    ax2.set_xticklabels([c.replace("_", "\n") for c in component_names], fontsize=9)
+    ax2.set_ylim(0, 1.15)
+    ax2.set_ylabel("R²  (I-JEPA latents → CLIP image patch embeddings)", fontsize=9)
+    ax2.set_title(
+        "CrossModal Projector R²\n(how much of CLIP patch structure lives in I-JEPA?)",
+        fontweight="bold", fontsize=9,
+    )
+    ax2.axhline(1.0, color="#888", linestyle="--", linewidth=0.8, alpha=0.5)
+    ax2.grid(axis="y", alpha=0.3, linewidth=0.7)
+    ax2.spines[["top", "right"]].set_visible(False)
+
+    fig.suptitle("CLIP Semantic Alignment Probes", fontsize=13, fontweight="bold")
+    fig.subplots_adjust(left=0.07, right=0.97, top=0.82, bottom=0.13, wspace=0.35)
+    fig.savefig(output_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+
 def main() -> None:
     args = parse_args()
     output_dir = Path(args.output_dir)
@@ -372,6 +497,9 @@ def main() -> None:
         metrics=["MIG", "DCI", "SAP"],
     )
 
+    print("Running CLIP semantic alignment probes...")
+    semantic_results = _run_semantic_probes(artifacts)
+
     _plot_probe_overview(
         artifacts=artifacts,
         component_results=component_results,
@@ -380,6 +508,11 @@ def main() -> None:
         disentanglement_result=disentanglement_result,
     )
     _plot_component_heatmaps(artifacts, output_path=output_dir / "ijepa_component_heatmaps.png")
+    if semantic_results is not None:
+        _plot_semantic_alignment(
+            semantic_results,
+            output_path=output_dir / "ijepa_semantic_alignment.png",
+        )
     _write_summary(
         artifacts=artifacts,
         metadata=metadata,

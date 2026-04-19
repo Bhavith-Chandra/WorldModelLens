@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
+import numpy as np
 import torch
 import torch.nn.functional as F
 from torch import Tensor
@@ -61,8 +62,16 @@ class SemanticProber:
         if self.model is not None:
             return
 
-        if "dino" in self.model_name.lower() and TORCHVISION_AVAILABLE:
-            self.model = models.dino_vitb16(pretrained=True)
+        if "dino" in self.model_name.lower():
+            try:
+                self.model = torch.hub.load(
+                    "facebookresearch/dino:main", self.model_name, pretrained=True
+                )
+            except Exception as exc:
+                raise ImportError(
+                    f"Could not load DINO model '{self.model_name}' via torch.hub. "
+                    f"Ensure internet access is available. Original error: {exc}"
+                ) from exc
             self.model.eval()
             self.model.to(self.device)
 
@@ -94,8 +103,9 @@ class SemanticProber:
 
         with torch.no_grad():
             if "dino" in self.model_name.lower():
-                features = self.model.get_intermediate_features(images)
-                features = features[-1].flatten(1).mean(dim=1)
+                features = self.model(images)
+                if features.dim() == 3:
+                    features = features[:, 0]  # [CLS] token
             elif "clip" in self.model_name.lower():
                 inputs = self.processor(images=images, return_tensors="pt")
                 inputs = {k: v.to(self.device) for k, v in inputs.items()}
@@ -304,3 +314,153 @@ class CLIPTextProber:
         pred_class = probs.argmax(dim=-1)
 
         return pred_class, probs
+
+
+# ---------------------------------------------------------------------------
+# I-JEPA specific: patch-level CLIP alignment
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class SemanticAlignmentResult:
+    """Result of CLIP semantic alignment for one I-JEPA component."""
+
+    component: str
+    r2_projection: float
+    concept_text_alignments: Dict[str, float]
+    projection_loss: Optional[float] = None
+
+
+class IJEPASemanticAligner:
+    """Align I-JEPA patch latents to CLIP space and measure concept-text alignment.
+
+    Pipeline:
+    1. Crop each patch from the raw image, extract CLIP image features per patch.
+    2. Train a CrossModalProjector: I-JEPA latents (192D) → CLIP image space (512D).
+    3. For each spatial concept, compute the I-JEPA probe direction and project it.
+    4. Measure cosine similarity with the CLIP text direction for that concept.
+    """
+
+    CLIP_MODEL = "openai/clip-vit-base-patch32"
+
+    def __init__(self, device: Optional[torch.device] = None) -> None:
+        from world_model_lens.probing.crossmodal import CrossModalProber
+
+        self.device = device or _get_device()
+        self.prober = CrossModalProber(device=self.device, clip_model_name=self.CLIP_MODEL)
+
+    def extract_patch_clip_features(
+        self,
+        raw_image: Any,
+        patch_ids: List[int],
+        grid_size: int,
+        image_size: int = 224,
+    ) -> Tensor:
+        """Crop each patch region, resize to 224×224, return CLIP image embeddings [N, 512]."""
+        from PIL import Image as _PILImage
+
+        self.prober._load_clip()
+        processor = self.prober._clip_processor
+        model = self.prober._clip_model
+
+        patch_extent = image_size // grid_size
+        raw_224 = raw_image.resize((image_size, image_size))
+        features = []
+
+        for patch_id in patch_ids:
+            row, col = divmod(int(patch_id), grid_size)
+            x, y = col * patch_extent, row * patch_extent
+            patch_crop = raw_224.crop((x, y, x + patch_extent, y + patch_extent))
+            patch_resized = patch_crop.resize((224, 224), _PILImage.BILINEAR)
+
+            inputs = processor(images=patch_resized, return_tensors="pt")
+            inputs = {k: v.to(self.device) for k, v in inputs.items()}
+            with torch.no_grad():
+                feat = model.get_image_features(**inputs)
+            features.append(feat.squeeze(0).cpu())
+
+        return torch.stack(features)  # [N, 512]
+
+    def _compute_r2(self, latents: Tensor, clip_features: Tensor, projector: Any) -> float:
+        """R² of trained projector on the training patches."""
+        with torch.no_grad():
+            predicted = projector(latents.to(self.device)).cpu()
+        target = F.normalize(clip_features, dim=-1)
+        ss_res = ((predicted - target) ** 2).sum()
+        ss_tot = ((target - target.mean(0)) ** 2).sum()
+        return float(1.0 - (ss_res / (ss_tot + 1e-8)).item())
+
+    def run(
+        self,
+        raw_image: Any,
+        activations: Tensor,
+        patch_ids: List[int],
+        grid_size: int,
+        concept_labels: Dict[str, np.ndarray],
+        concept_prompts: Dict[str, Tuple[str, str]],
+        component_name: str,
+        projector_epochs: int = 300,
+    ) -> SemanticAlignmentResult:
+        """Run full semantic alignment pipeline for one I-JEPA component.
+
+        Args:
+            raw_image: PIL Image of the input.
+            activations: Patch latents [N, D_latent].
+            patch_ids: Patch indices corresponding to each row of activations.
+            grid_size: Spatial grid side length.
+            concept_labels: Dict mapping concept name → integer label array [N].
+            concept_prompts: Dict mapping concept name → (positive_text, negative_text).
+            component_name: Label for this component (used in result).
+            projector_epochs: Adam epochs for CrossModalProjector training.
+
+        Returns:
+            SemanticAlignmentResult with R² and per-concept CLIP alignment scores.
+        """
+        clip_features = self.extract_patch_clip_features(raw_image, patch_ids, grid_size)
+
+        projector = self.prober.train_projector(
+            activations.float(),
+            clip_features,
+            epochs=projector_epochs,
+            lr=1e-3,
+        )
+        r2 = self._compute_r2(activations.float(), clip_features, projector)
+
+        acts_np = activations.cpu().float().numpy()
+        concept_text_alignments: Dict[str, float] = {}
+
+        for concept_name, (pos_prompt, neg_prompt) in concept_prompts.items():
+            labels = concept_labels.get(concept_name)
+            if labels is None:
+                continue
+
+            pos_mask = labels == 1
+            neg_mask = labels == 0
+            if pos_mask.sum() < 2 or neg_mask.sum() < 2:
+                continue
+
+            # Compute I-JEPA concept direction in latent space
+            concept_dir = torch.from_numpy(
+                acts_np[pos_mask].mean(0) - acts_np[neg_mask].mean(0)
+            ).float()
+            concept_dir = F.normalize(concept_dir, dim=0)
+
+            # Project direction into CLIP space
+            with torch.no_grad():
+                concept_dir_clip = projector(
+                    concept_dir.unsqueeze(0).to(self.device)
+                ).squeeze(0).cpu()
+
+            # CLIP text direction
+            text_feats = self.prober.encode_text([pos_prompt, neg_prompt]).cpu()  # [2, 512]
+            text_dir = F.normalize(text_feats[0] - text_feats[1], dim=0)
+
+            concept_text_alignments[concept_name] = float(
+                torch.dot(concept_dir_clip, text_dir).item()
+            )
+
+        return SemanticAlignmentResult(
+            component=component_name,
+            r2_projection=r2,
+            concept_text_alignments=concept_text_alignments,
+        )

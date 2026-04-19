@@ -10,6 +10,7 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import (
     train_test_split,
     cross_val_score,
+    KFold,
     StratifiedKFold,
     GridSearchCV,
 )
@@ -244,9 +245,7 @@ class LatentProber:
                 for alpha in self.alphas:
                     model = Ridge(alpha=alpha, random_state=self.seed)
                     if use_cv and len(X_train_scaled) >= self.n_folds:
-                        cv = StratifiedKFold(
-                            n_splits=self.n_folds, shuffle=True, random_state=self.seed
-                        )
+                        cv = KFold(n_splits=self.n_folds, shuffle=True, random_state=self.seed)
                         try:
                             scores = cross_val_score(
                                 model, X_train_scaled, y_train, cv=cv, scoring="r2"
@@ -255,7 +254,7 @@ class LatentProber:
                             if mean_score > best_cv_score:
                                 best_cv_score = mean_score
                                 best_alpha = alpha
-                        except:
+                        except Exception:
                             pass
 
                 model = Ridge(alpha=best_alpha, random_state=self.seed)
@@ -281,21 +280,22 @@ class LatentProber:
         cv_std = 0.0
 
         if use_cv and len(X_train_scaled) >= self.n_folds:
-            cv = StratifiedKFold(n_splits=self.n_folds, shuffle=True, random_state=self.seed)
             if is_classification:
+                cv = StratifiedKFold(n_splits=self.n_folds, shuffle=True, random_state=self.seed)
                 cv_scores = list(
                     cross_val_score(model, X_train_scaled, y_train, cv=cv, scoring="accuracy")
                 )
             else:
+                cv = KFold(n_splits=self.n_folds, shuffle=True, random_state=self.seed)
                 try:
                     cv_scores = list(
                         cross_val_score(model, X_train_scaled, y_train, cv=cv, scoring="r2")
                     )
-                except:
+                except Exception:
                     cv_scores = []
             if cv_scores:
-                cv_mean = np.mean(cv_scores)
-                cv_std = np.std(cv_scores)
+                cv_mean = float(np.mean(cv_scores))
+                cv_std = float(np.std(cv_scores))
 
         if hasattr(model, "coef_"):
             direction = torch.from_numpy(model.coef_.flatten())
