@@ -45,6 +45,7 @@ except Exception:
 
 from utils import (
     OUTPUT_DIR,
+    PatchLabelBuilder,
     build_patch_factors,
     build_patch_heatmap,
     build_patch_labels,
@@ -69,6 +70,10 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--device", type=str, default=None, help="Optional torch device, e.g. cpu or cuda.")
     parser.add_argument(
+        "--n-images", type=int, default=1,
+        help="Number of images for multi-image aggregate probing (default 1 = single-image mode).",
+    )
+    parser.add_argument(
         "--output-dir",
         type=str,
         default=str(OUTPUT_DIR),
@@ -77,24 +82,37 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def _probe_component(
+_GEOMETRIC_PROBE_SPECS = [
+    ("top_half",         "logistic"),
+    ("left_half",        "logistic"),
+    ("center_band",      "logistic"),
+    ("patch_index_norm", "ridge"),
+    ("row_norm",         "ridge"),
+    ("col_norm",         "ridge"),
+    ("quadrant",         "logistic"),
+    ("is_boundary",      "logistic"),
+]
+_CONTENT_PROBE_SPECS = [
+    ("brightness",       "ridge"),
+    ("edge_density",     "ridge"),
+    ("texture_variance", "ridge"),
+    ("saturation",       "ridge"),
+]
+
+
+def _run_probes(
     prober: LatentProber,
     component_name: str,
     activations: torch.Tensor,
-    patch_ids: list[int],
-    grid_size: int,
-) -> tuple[dict[str, object], dict[str, np.ndarray]]:
-    labels = build_patch_labels(patch_ids, grid_size)
+    labels: dict[str, np.ndarray],
+    include_content: bool = False,
+) -> dict[str, object]:
+    """Train all probes given a pre-built labels dict."""
+    specs = _GEOMETRIC_PROBE_SPECS + (_CONTENT_PROBE_SPECS if include_content else [])
     results: dict[str, object] = {}
-
-    probe_specs = [
-        ("top_half", "logistic"),
-        ("left_half", "logistic"),
-        ("center_band", "logistic"),
-        ("patch_index_norm", "ridge"),
-    ]
-
-    for concept_name, probe_type in probe_specs:
+    for concept_name, probe_type in specs:
+        if concept_name not in labels:
+            continue
         results[concept_name] = prober.train_probe(
             activations=activations,
             labels=labels[concept_name],
@@ -102,7 +120,21 @@ def _probe_component(
             activation_name=component_name,
             probe_type=probe_type,
         )
+    return results
 
+
+def _probe_component(
+    prober: LatentProber,
+    component_name: str,
+    activations: torch.Tensor,
+    patch_ids: list[int],
+    grid_size: int,
+    raw_image=None,
+) -> tuple[dict[str, object], dict[str, np.ndarray]]:
+    builder = PatchLabelBuilder(patch_ids, grid_size)
+    labels = builder.build_all(raw_image) if raw_image is not None else builder.build_geometric()
+    results = _run_probes(prober, component_name, activations, labels,
+                          include_content=(raw_image is not None))
     return results, labels
 
 
@@ -343,6 +375,57 @@ def _write_summary(
     output_path.write_text("\n".join(lines), encoding="utf-8")
 
 
+def _plot_probe_heatmap(
+    component_results: dict,
+    output_path: Path,
+    title: str = "Probe Accuracy / R² Heatmap",
+    n_images: int = 1,
+) -> None:
+    """Heatmap of probe scores: rows = concepts, columns = components."""
+    component_names = list(component_results.keys())
+    # Collect all concept names present across components
+    all_concepts: list[str] = []
+    seen: set[str] = set()
+    for res in component_results.values():
+        for c in res:
+            if c not in seen:
+                all_concepts.append(c)
+                seen.add(c)
+
+    matrix = np.full((len(all_concepts), len(component_names)), np.nan)
+    for j, cname in enumerate(component_names):
+        for i, concept in enumerate(all_concepts):
+            r = component_results[cname].get(concept)
+            if r is None:
+                continue
+            matrix[i, j] = r.r2 if r.r2 is not None else r.accuracy
+
+    fig, ax = plt.subplots(figsize=(max(6, len(component_names) * 2.2), max(5, len(all_concepts) * 0.55)))
+    im = ax.imshow(matrix, cmap="RdYlGn", vmin=0, vmax=1, aspect="auto")
+
+    ax.set_xticks(range(len(component_names)))
+    ax.set_xticklabels([c.replace("_", "\n") for c in component_names], fontsize=9)
+    ax.set_yticks(range(len(all_concepts)))
+    ax.set_yticklabels(all_concepts, fontsize=8)
+
+    for i in range(len(all_concepts)):
+        for j in range(len(component_names)):
+            v = matrix[i, j]
+            if not np.isnan(v):
+                ax.text(j, i, f"{v:.2f}", ha="center", va="center",
+                        fontsize=7, color="black" if 0.25 < v < 0.85 else "white")
+
+    cbar = fig.colorbar(im, ax=ax, fraction=0.03, pad=0.02)
+    cbar.set_label("Accuracy (clf) / R² (reg)", fontsize=8)
+
+    suffix = f"  [{n_images} image{'s' if n_images > 1 else ''}]"
+    ax.set_title(f"{title}{suffix}", fontweight="bold", fontsize=10)
+    ax.spines[["top", "right", "bottom", "left"]].set_visible(False)
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+
 def _run_semantic_probes(artifacts) -> dict | None:
     """Run CLIP semantic alignment probes across all I-JEPA components.
 
@@ -479,6 +562,7 @@ def main() -> None:
             activations=component.activations,
             patch_ids=component.patch_ids,
             grid_size=artifacts.grid_size,
+            raw_image=raw_image,
         )
         component_results[component_name] = results
         component_labels[component_name] = labels
@@ -496,6 +580,33 @@ def main() -> None:
         components=list(artifacts.components.keys()),
         metrics=["MIG", "DCI", "SAP"],
     )
+
+    # --- Single-image heatmap (all concepts including content labels) ---
+    _plot_probe_heatmap(
+        component_results,
+        output_dir / "ijepa_probe_heatmap.png",
+        title="Single-Image Probe Scores (geometric + content labels)",
+        n_images=1,
+    )
+
+    # --- Multi-image aggregate probing ---
+    if args.n_images > 1:
+        print(f"Building multi-image dataset ({args.n_images} images)...")
+        from dataset import build_multi_image_dataset
+        dataset = build_multi_image_dataset(wm, adapter, n_synthetic=args.n_images)
+        multi_results: dict = {}
+        for comp_name, comp_data in dataset.components.items():
+            multi_results[comp_name] = _run_probes(
+                prober, comp_name, comp_data.activations, comp_data.labels,
+                include_content=True,
+            )
+        _plot_probe_heatmap(
+            multi_results,
+            output_dir / "ijepa_multi_image_probe_heatmap.png",
+            title="Multi-Image Aggregate Probe Scores",
+            n_images=dataset.n_images,
+        )
+        print(f"Multi-image probing done — {dataset.n_patches_total} total patches.")
 
     print("Running CLIP semantic alignment probes...")
     semantic_results = _run_semantic_probes(artifacts)

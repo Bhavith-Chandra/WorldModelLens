@@ -210,6 +210,89 @@ def build_patch_labels(patch_ids: list[int], grid_size: int) -> dict[str, np.nda
     }
 
 
+class PatchLabelBuilder:
+    """Build per-patch labels from grid geometry and raw pixel content.
+
+    Geometric labels require only patch_ids + grid_size.
+    Content labels additionally require the raw PIL image.
+    """
+
+    def __init__(self, patch_ids: list[int], grid_size: int, image_size: int = 224) -> None:
+        self.patch_ids = patch_ids
+        self.grid_size = grid_size
+        self.image_size = image_size
+        self.patch_extent = image_size // grid_size
+
+    def build_geometric(self) -> dict[str, np.ndarray]:
+        """Position-based labels — extends the original four with richer splits."""
+        ids = np.asarray(self.patch_ids, dtype=np.int64)
+        rows = ids // self.grid_size
+        cols = ids % self.grid_size
+        g = self.grid_size
+        c_lo, c_hi = g // 4, g - g // 4
+
+        return {
+            "top_half":         (rows < g // 2).astype(np.int64),
+            "left_half":        (cols < g // 2).astype(np.int64),
+            "center_band":      ((rows >= c_lo) & (rows < c_hi)).astype(np.int64),
+            "patch_index_norm": ids.astype(np.float32) / max(g * g - 1, 1),
+            "row_norm":         rows.astype(np.float32) / max(g - 1, 1),
+            "col_norm":         cols.astype(np.float32) / max(g - 1, 1),
+            "quadrant":         (rows >= g // 2).astype(np.int64) * 2
+                                + (cols >= g // 2).astype(np.int64),
+            "is_boundary":      (
+                (rows == 0) | (rows == g - 1) | (cols == 0) | (cols == g - 1)
+            ).astype(np.int64),
+        }
+
+    def build_content(self, raw_image) -> dict[str, np.ndarray]:
+        """Pixel-derived labels computed by cropping each patch from raw_image.
+
+        No external deps — uses only numpy arithmetic.
+        Labels:
+          brightness      — mean luminance [0, 1]
+          edge_density    — mean gradient magnitude (finite diff) [0, 1]
+          texture_variance— luminance variance [0, 1]
+          saturation      — mean HSV-style saturation [0, 1]
+        """
+        img = np.array(
+            raw_image.resize((self.image_size, self.image_size))
+        ).astype(np.float32)   # [H, W, 3], values in [0, 255]
+
+        p = self.patch_extent
+        brightness_vals, edge_vals, texture_vals, sat_vals = [], [], [], []
+
+        for patch_id in self.patch_ids:
+            row, col = divmod(int(patch_id), self.grid_size)
+            y0, x0 = row * p, col * p
+            patch = img[y0:y0 + p, x0:x0 + p]   # [p, p, 3]
+
+            lum = 0.299 * patch[:, :, 0] + 0.587 * patch[:, :, 1] + 0.114 * patch[:, :, 2]
+
+            brightness_vals.append(float(lum.mean() / 255.0))
+            texture_vals.append(float(lum.var() / (255.0 ** 2)))
+
+            gy = float(np.abs(np.diff(lum, axis=0)).mean())
+            gx = float(np.abs(np.diff(lum, axis=1)).mean())
+            edge_vals.append((gx + gy) / 255.0)
+
+            cmax = np.maximum(np.maximum(patch[:, :, 0], patch[:, :, 1]), patch[:, :, 2])
+            cmin = np.minimum(np.minimum(patch[:, :, 0], patch[:, :, 1]), patch[:, :, 2])
+            sat = np.where(cmax > 0, (cmax - cmin) / (cmax + 1e-8), 0.0)
+            sat_vals.append(float(sat.mean()))
+
+        return {
+            "brightness":       np.array(brightness_vals, dtype=np.float32),
+            "edge_density":     np.array(edge_vals,       dtype=np.float32),
+            "texture_variance": np.array(texture_vals,    dtype=np.float32),
+            "saturation":       np.array(sat_vals,        dtype=np.float32),
+        }
+
+    def build_all(self, raw_image) -> dict[str, np.ndarray]:
+        """All labels — geometric + pixel content."""
+        return {**self.build_geometric(), **self.build_content(raw_image)}
+
+
 def build_patch_factors(patch_ids: list[int], grid_size: int) -> dict[str, torch.Tensor]:
     labels = build_patch_labels(patch_ids, grid_size)
     return {name: torch.from_numpy(values.astype(np.float32)) for name, values in labels.items()}

@@ -159,14 +159,17 @@ class LatentProber:
     def _detect_task_type(self, labels: np.ndarray) -> str:
         """Detect whether classification or regression.
 
-        Args:
-            labels: Label array.
-
-        Returns:
-            'classification' or 'regression'.
+        Integer dtypes → classification.
+        Floating dtypes → always regression (avoids misclassifying continuous
+        labels that happen to have few unique values, e.g. row_norm on a 14-row
+        grid has exactly 14 unique floats which would otherwise trip the < 20
+        heuristic and send them to LogisticRegression).
+        Other dtypes → fall back to unique-count heuristic.
         """
         if labels.dtype in [np.int32, np.int64, np.uint8]:
             return "classification"
+        if np.issubdtype(labels.dtype, np.floating):
+            return "regression"
         if len(np.unique(labels)) < 20:
             return "classification"
         return "regression"
