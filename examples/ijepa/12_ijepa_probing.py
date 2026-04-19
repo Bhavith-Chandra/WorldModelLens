@@ -1,0 +1,401 @@
+from __future__ import annotations
+
+import argparse
+from pathlib import Path
+
+import matplotlib.pyplot as plt
+import matplotlib.patches as patches
+import matplotlib.colors as mcolors
+import numpy as np
+import torch
+
+_COMPONENT_COLORS = {
+    "z_posterior": "#4C72B0",
+    "target_encoding": "#55A868",
+    "predictor_targets": "#DD8452",
+}
+_CONCEPT_LABELS = {
+    "top_half": "Top Half",
+    "left_half": "Left Half",
+    "center_band": "Center Band",
+}
+
+from world_model_lens import LatentProber
+from world_model_lens.analysis.metrics import DisentanglementEvaluationSuite
+
+from utils import (
+    OUTPUT_DIR,
+    build_patch_factors,
+    build_patch_heatmap,
+    build_patch_labels,
+    collect_ijepa_artifacts,
+    get_patch_rect,
+    get_sample_image,
+    load_ijepa_world_model,
+    preprocess_image,
+)
+
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Checkpoint-first I-JEPA probing example.")
+    parser.add_argument("--checkpoint", type=str, default=None, help="Path to the I-JEPA checkpoint.")
+    parser.add_argument("--image", type=str, default=None, help="Path to a specific image file.")
+    parser.add_argument(
+        "--imagenet-root",
+        type=str,
+        default=None,
+        help="Optional ImageNet root. The first image found under val/train will be used.",
+    )
+    parser.add_argument("--device", type=str, default=None, help="Optional torch device, e.g. cpu or cuda.")
+    parser.add_argument(
+        "--output-dir",
+        type=str,
+        default=str(OUTPUT_DIR),
+        help="Directory where plots and text summaries will be written.",
+    )
+    return parser.parse_args()
+
+
+def _probe_component(
+    prober: LatentProber,
+    component_name: str,
+    activations: torch.Tensor,
+    patch_ids: list[int],
+    grid_size: int,
+) -> tuple[dict[str, object], dict[str, np.ndarray]]:
+    labels = build_patch_labels(patch_ids, grid_size)
+    results: dict[str, object] = {}
+
+    probe_specs = [
+        ("top_half", "logistic"),
+        ("left_half", "logistic"),
+        ("center_band", "logistic"),
+        ("patch_index_norm", "ridge"),
+    ]
+
+    for concept_name, probe_type in probe_specs:
+        results[concept_name] = prober.train_probe(
+            activations=activations,
+            labels=labels[concept_name],
+            concept_name=concept_name,
+            activation_name=component_name,
+            probe_type=probe_type,
+        )
+
+    return results, labels
+
+
+def _plot_probe_overview(
+    artifacts,
+    component_results,
+    component_labels,
+    output_path: Path,
+    disentanglement_result=None,
+) -> None:
+    component_names = list(component_results.keys())
+    n_comps = len(component_names)
+
+    fig = plt.figure(figsize=(24, 15))
+    outer = fig.add_gridspec(1, 2, width_ratios=[0.85, 2.2], wspace=0.08,
+                             left=0.03, right=0.97, top=0.91, bottom=0.05)
+    ax_img = fig.add_subplot(outer[0])
+
+    n_right_rows = 3 if disentanglement_result is not None else 2
+    height_ratios = [1.1, 1.1, 0.6] if disentanglement_result is not None else [1.1, 1.1]
+    inner = outer[1].subgridspec(n_right_rows, 2, height_ratios=height_ratios, hspace=0.55, wspace=0.38)
+    ax_bar = fig.add_subplot(inner[0, 0])
+    ax_r2  = fig.add_subplot(inner[0, 1])
+    pca_inner = inner[1, :].subgridspec(1, n_comps, wspace=0.38)
+    pca_axes = [fig.add_subplot(pca_inner[i]) for i in range(n_comps)]
+
+    # --- Image panel ---
+    ax_img.imshow(artifacts.raw_image.resize((224, 224)))
+    for patch_id in artifacts.context_ids:
+        x, y, w, h = get_patch_rect(patch_id, artifacts.grid_size, image_size=224)
+        ax_img.add_patch(patches.Rectangle((x, y), w, h, linewidth=0.8, edgecolor="#4CAF50", facecolor="#4CAF50", alpha=0.15))
+    for patch_id in artifacts.target_ids:
+        x, y, w, h = get_patch_rect(patch_id, artifacts.grid_size, image_size=224)
+        ax_img.add_patch(patches.Rectangle((x, y), w, h, linewidth=1.5, edgecolor="#F44336", facecolor="#F44336", alpha=0.20))
+    ax_img.legend(
+        handles=[
+            patches.Patch(facecolor="#4CAF50", alpha=0.6, label=f"Context ({len(artifacts.context_ids)} patches)"),
+            patches.Patch(facecolor="#F44336", alpha=0.6, label=f"Target ({len(artifacts.target_ids)} patches)"),
+        ],
+        loc="lower right", fontsize=9, framealpha=0.9,
+    )
+    ax_img.set_title("Context / Target Patch Layout", fontweight="bold", pad=8)
+    ax_img.axis("off")
+
+    # --- Classification accuracy bars with cv_std error bars ---
+    concepts = ["top_half", "left_half", "center_band"]
+    bar_w = 0.22
+    x = np.arange(len(concepts))
+    for i, cname in enumerate(component_names):
+        color = _COMPONENT_COLORS.get(cname, f"C{i}")
+        accs = [component_results[cname][c].accuracy for c in concepts]
+        errs = [component_results[cname][c].cv_std for c in concepts]
+        offset = (i - n_comps / 2 + 0.5) * bar_w
+        bars = ax_bar.bar(
+            x + offset, accs, bar_w,
+            label=cname.replace("_", " "), color=color, alpha=0.88,
+            edgecolor="white", linewidth=0.6,
+            yerr=errs, capsize=3, error_kw={"elinewidth": 1.2, "ecolor": "#444", "capthick": 1.2},
+        )
+        for bar, acc, err in zip(bars, accs, errs, strict=False):
+            ax_bar.text(
+                bar.get_x() + bar.get_width() / 2,
+                acc + err + 0.025,
+                f"{acc:.2f}", ha="center", va="bottom", fontsize=7, fontweight="bold",
+            )
+    ax_bar.axhline(0.5, color="#888", linestyle="--", linewidth=1.0, alpha=0.7, label="chance (0.5)")
+    ax_bar.set_xticks(x)
+    ax_bar.set_xticklabels([_CONCEPT_LABELS[c] for c in concepts], fontsize=9)
+    ax_bar.set_ylim(0.0, 1.32)
+    ax_bar.set_ylabel("Accuracy ± CV std", fontsize=9)
+    ax_bar.set_title("Linear Probe Accuracy\n(spatial concept decoding)", fontweight="bold", pad=6, fontsize=9)
+    ax_bar.legend(fontsize=8, loc="lower right", framealpha=0.9)
+    ax_bar.grid(axis="y", alpha=0.3, linewidth=0.7)
+    ax_bar.spines[["top", "right"]].set_visible(False)
+
+    # --- R² subplot for patch_index_norm (positional regression) ---
+    r2_vals, r2_colors, r2_labels = [], [], []
+    for cname in component_names:
+        result = component_results[cname].get("patch_index_norm")
+        if result is not None and result.r2 is not None:
+            r2 = float(result.r2)
+            r2_vals.append(r2)
+            r2_colors.append(_COMPONENT_COLORS.get(cname, "gray") if r2 >= 0 else "#d62728")
+            r2_labels.append(cname.replace("_", "\n"))
+    if r2_vals:
+        bars_r2 = ax_r2.bar(np.arange(len(r2_vals)), r2_vals, color=r2_colors, alpha=0.88, edgecolor="white", linewidth=0.6, width=0.5)
+        for bar, val in zip(bars_r2, r2_vals, strict=False):
+            ypos = val + 0.03 if val >= 0 else val - 0.07
+            va = "bottom" if val >= 0 else "top"
+            ax_r2.text(bar.get_x() + bar.get_width() / 2, ypos, f"{val:.3f}", ha="center", va=va, fontsize=8, fontweight="bold")
+        ax_r2.axhline(0.0, color="#555", linewidth=1.0)
+        ax_r2.axhline(1.0, color="#888", linestyle="--", linewidth=0.8, alpha=0.5)
+        ax_r2.text(len(r2_vals) - 0.45, 1.02, "R²=1 (perfect)", fontsize=7, color="#888", va="bottom")
+        ax_r2.set_xticks(np.arange(len(r2_labels)))
+        ax_r2.set_xticklabels(r2_labels, fontsize=9)
+        ymin = min(min(r2_vals) - 0.2, -0.5)
+        ax_r2.set_ylim(ymin, 1.18)
+        ax_r2.set_ylabel("R²", fontsize=9)
+        ax_r2.set_title("Ridge Probe R²: patch_index_norm\n(can absolute patch position be decoded?)", fontweight="bold", pad=6, fontsize=9)
+        ax_r2.grid(axis="y", alpha=0.3, linewidth=0.7)
+        ax_r2.spines[["top", "right"]].set_visible(False)
+
+    # --- PCA for all components, shared colorbar on last axis ---
+    norm = mcolors.Normalize(vmin=0, vmax=1)
+    for ax_pca, cname in zip(pca_axes, component_names, strict=False):
+        activations = artifacts.components[cname].activations
+        labels_arr = component_labels[cname]["top_half"]
+        acts_c = activations - activations.mean(0)
+        _, _, vt = torch.pca_lowrank(acts_c, q=2)
+        proj = (acts_c @ vt).detach().cpu().numpy()
+        ax_pca.scatter(proj[:, 0], proj[:, 1], c=labels_arr, cmap="coolwarm", norm=norm,
+                       s=28, alpha=0.85, edgecolors="white", linewidths=0.25)
+        acc = component_results[cname]["top_half"].accuracy
+        ax_pca.set_title(f"{cname.replace('_', ' ').title()}\ntop_half probe={acc:.2f}", fontweight="bold", pad=4, fontsize=8)
+        ax_pca.set_xlabel("PC 1", fontsize=8)
+        ax_pca.set_ylabel("PC 2", fontsize=8)
+        ax_pca.tick_params(labelsize=7)
+        ax_pca.grid(alpha=0.25, linewidth=0.7)
+        ax_pca.spines[["top", "right"]].set_visible(False)
+    sm = plt.cm.ScalarMappable(cmap="coolwarm", norm=norm)
+    cb = fig.colorbar(sm, ax=pca_axes[-1], shrink=0.8, pad=0.04)
+    cb.set_label("Top-half\n(1=upper, 0=lower)", fontsize=7)
+    cb.ax.tick_params(labelsize=7)
+
+    # --- Disentanglement: DCI and MIG/SAP on separate scales ---
+    if disentanglement_result is not None:
+        ax_dci = fig.add_subplot(inner[2, 0])
+        ax_mig = fig.add_subplot(inner[2, 1])
+        scores = disentanglement_result.summary_scores
+
+        dci_keys   = [m for m in scores if m.startswith("DCI")]
+        sparse_keys = [m for m in scores if not m.startswith("DCI")]
+
+        dci_vals = [scores[m] for m in dci_keys]
+        dci_labels = [m.replace("DCI_", "") for m in dci_keys]
+        dci_colors = [_COMPONENT_COLORS["target_encoding"] if v >= 0.5 else _COMPONENT_COLORS["predictor_targets"] for v in dci_vals]
+        bdci = ax_dci.barh(dci_labels, dci_vals, color=dci_colors, alpha=0.85, edgecolor="white")
+        ax_dci.axvline(0.5, color="#888", linestyle="--", linewidth=1.0, alpha=0.7)
+        ax_dci.set_xlim(0, 1.2)
+        for bar, val in zip(bdci, dci_vals, strict=False):
+            ax_dci.text(val + 0.02, bar.get_y() + bar.get_height() / 2, f"{val:.3f}", va="center", fontsize=8)
+        ax_dci.set_title("DCI Metrics (0–1 scale)", fontweight="bold", pad=4, fontsize=9)
+        ax_dci.grid(axis="x", alpha=0.3, linewidth=0.7)
+        ax_dci.spines[["top", "right"]].set_visible(False)
+        ax_dci.tick_params(labelsize=8)
+
+        sparse_vals = [scores[m] for m in sparse_keys]
+        sparse_max = max(sparse_vals) * 1.6 if sparse_vals else 0.02
+        bsp = ax_mig.barh(sparse_keys, sparse_vals, color="#9e9e9e", alpha=0.85, edgecolor="white")
+        ax_mig.set_xlim(0, max(sparse_max, 0.02))
+        for bar, val in zip(bsp, sparse_vals, strict=False):
+            ax_mig.text(val + sparse_max * 0.04, bar.get_y() + bar.get_height() / 2, f"{val:.4f}", va="center", fontsize=8)
+        ax_mig.set_title("MIG / SAP (near-zero = entangled)", fontweight="bold", pad=4, fontsize=9)
+        ax_mig.grid(axis="x", alpha=0.3, linewidth=0.7)
+        ax_mig.spines[["top", "right"]].set_visible(False)
+        ax_mig.tick_params(labelsize=8)
+
+    fig.suptitle("I-JEPA Checkpoint Probing Overview", fontsize=14, fontweight="bold")
+    fig.savefig(output_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+
+def _plot_component_heatmaps(artifacts, output_path: Path) -> None:
+    component_names = [name for name in ["z_posterior", "predictor_targets", "target_encoding"] if name in artifacts.components]
+    n = max(1, len(component_names))
+    fig, axes = plt.subplots(1, n, figsize=(5 * n + 0.5, 5.5))
+    axes = np.atleast_1d(axes)
+
+    for ax, component_name in zip(axes, component_names, strict=False):
+        component = artifacts.components[component_name]
+        energy = component.activations.norm(dim=1)
+        emin, emax = float(energy.min()), float(energy.max())
+        heatmap = build_patch_heatmap(component.patch_ids, energy, artifacts.grid_size)
+        ax.imshow(artifacts.raw_image.resize((224, 224)), alpha=0.60)
+        im = ax.imshow(
+            heatmap,
+            cmap="inferno",
+            alpha=0.65,
+            extent=(0, 224, 224, 0),
+            interpolation="nearest",
+            vmin=emin,
+            vmax=emax,
+        )
+        cb = plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+        cb.set_label("L2 norm", fontsize=8)
+        cb.ax.tick_params(labelsize=8)
+        erange = emax - emin
+        pct = erange / emax * 100
+        title = component_name.replace("_", " ").title()
+        ax.set_title(f"{title}\nΔ={erange:.4f}  ({pct:.2f}% of max)", fontweight="bold", pad=6, fontsize=9)
+        ax.axis("off")
+
+    fig.suptitle("Per-Patch Activation Energy\n(L2 norm of latent feature vector per patch)", fontsize=12, fontweight="bold")
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+
+def _write_summary(
+    artifacts,
+    metadata,
+    checkpoint_path: Path,
+    component_results,
+    disentanglement_result,
+    output_path: Path,
+) -> None:
+    lines = []
+    lines.append("I-JEPA Probing Summary")
+    lines.append("=" * 40)
+    lines.append(f"checkpoint: {checkpoint_path}")
+    lines.append(f"image_source: {metadata.get('source', 'unknown')}")
+    if "path" in metadata:
+        lines.append(f"image_path: {metadata['path']}")
+    if "label_name" in metadata:
+        lines.append(f"label_name: {metadata['label_name']}")
+    lines.append(f"context_patches: {len(artifacts.context_ids)}")
+    lines.append(f"target_patches: {len(artifacts.target_ids)}")
+    lines.append("")
+
+    lines.append("Probe Results")
+    lines.append("-" * 40)
+    for component_name, result_dict in component_results.items():
+        lines.append(component_name)
+        for concept_name, result in result_dict.items():
+            metric_name = "r2" if result.r2 is not None else "accuracy"
+            metric_value = result.r2 if result.r2 is not None else result.accuracy
+            lines.append(
+                f"  {concept_name}: probe={result.probe_type} {metric_name}={metric_value:.4f} cv_mean={result.cv_mean:.4f} cv_std={result.cv_std:.4f} alpha={result.regularization_alpha:.4g}"
+            )
+        lines.append("")
+
+    lines.append("Disentanglement Summary")
+    lines.append("-" * 40)
+    for metric_name, score in disentanglement_result.summary_scores.items():
+        lines.append(f"{metric_name}: {score:.4f}")
+    lines.append("")
+
+    output_path.write_text("\n".join(lines), encoding="utf-8")
+
+
+def main() -> None:
+    args = parse_args()
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    wm, adapter, config, checkpoint_path = load_ijepa_world_model(
+        checkpoint_path=args.checkpoint,
+        device=args.device,
+    )
+
+    raw_image, metadata = get_sample_image(
+        image_path=args.image,
+        imagenet_root=args.imagenet_root,
+        image_size=getattr(config, "img_size", 224),
+    )
+    image_tensor = preprocess_image(raw_image, image_size=getattr(config, "img_size", 224))
+
+    artifacts = collect_ijepa_artifacts(wm, adapter, raw_image, image_tensor)
+    prober = LatentProber(seed=42)
+
+    component_results = {}
+    component_labels = {}
+    disentanglement_inputs = {}
+
+    for component_name, component in artifacts.components.items():
+        results, labels = _probe_component(
+            prober=prober,
+            component_name=component_name,
+            activations=component.activations,
+            patch_ids=component.patch_ids,
+            grid_size=artifacts.grid_size,
+        )
+        component_results[component_name] = results
+        component_labels[component_name] = labels
+        disentanglement_inputs[component_name] = component.activations
+
+    cache_proxy = {name: component.activations for name, component in artifacts.components.items()}
+    factor_labels = build_patch_factors(
+        artifacts.components["target_encoding"].patch_ids if "target_encoding" in artifacts.components else artifacts.components[next(iter(artifacts.components))].patch_ids,
+        artifacts.grid_size,
+    )
+    disentangler = DisentanglementEvaluationSuite()
+    disentanglement_result = disentangler.evaluate_components(
+        cache=cache_proxy,
+        factors=factor_labels,
+        components=list(artifacts.components.keys()),
+        metrics=["MIG", "DCI", "SAP"],
+    )
+
+    _plot_probe_overview(
+        artifacts=artifacts,
+        component_results=component_results,
+        component_labels=component_labels,
+        output_path=output_dir / "ijepa_probing_overview.png",
+        disentanglement_result=disentanglement_result,
+    )
+    _plot_component_heatmaps(artifacts, output_path=output_dir / "ijepa_component_heatmaps.png")
+    _write_summary(
+        artifacts=artifacts,
+        metadata=metadata,
+        checkpoint_path=checkpoint_path,
+        component_results=component_results,
+        disentanglement_result=disentanglement_result,
+        output_path=output_dir / "ijepa_probing_summary.txt",
+    )
+
+    print("=" * 70)
+    print("I-JEPA probing scripts are configured.")
+    print(f"checkpoint: {checkpoint_path}")
+    print(f"components: {list(artifacts.components.keys())}")
+    print(f"outputs: {output_dir}")
+    print("=" * 70)
+
+
+if __name__ == "__main__":
+    main()
