@@ -204,12 +204,18 @@ class LatentProber:
         task_type = self._detect_task_type(y)
         is_classification = task_type == "classification"
 
+        # Stratify only when every class has at least 2 samples
+        if is_classification:
+            unique, counts = np.unique(y, return_counts=True)
+            can_stratify = bool((counts >= 2).all())
+        else:
+            can_stratify = False
         X_train, X_test, y_train, y_test = train_test_split(
             X,
             y,
             test_size=test_split,
             random_state=self.seed,
-            stratify=y if is_classification else None,
+            stratify=y if can_stratify else None,
         )
 
         scaler = StandardScaler()

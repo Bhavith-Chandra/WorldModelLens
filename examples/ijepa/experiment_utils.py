@@ -474,7 +474,7 @@ def save_baseline_plot(baseline_rows: list[dict[str, Any]], output_path: Path) -
     ax.bar(x + width / 2, random_init, width=width, label="random_init", color="#ff7f0e")
     ax.set_ylim(0.0, 1.05)
     ax.set_ylabel("score")
-    ax.set_title("Pretrained vs Random-Init Probe Scores")
+    ax.set_title("Pretrained vs Random-Init Patch Probe Scores")
     ax.set_xticks(x)
     ax.set_xticklabels(labels, rotation=35, ha="right", fontsize=8)
     ax.legend()

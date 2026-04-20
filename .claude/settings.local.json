@@ -3,7 +3,8 @@
     "allow": [
       "Bash(grep -E \"\\\\.\\(rst|md|txt\\)$\")",
       "Bash(ls -la */examples/)",
-      "Bash(python 12_ijepa_probing.py)"
+      "Bash(python 12_ijepa_probing.py)",
+      "Bash(python 12_ijepa_probing.py --checkpoint ijepa_mini.pth)"
     ]
   }
 }

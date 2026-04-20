@@ -302,10 +302,11 @@ def build_patch_heatmap(
     patch_ids: list[int],
     values: np.ndarray | torch.Tensor,
     grid_size: int,
+    fill_value: float = 0.0,
 ) -> np.ndarray:
     if isinstance(values, torch.Tensor):
         values = values.detach().cpu().numpy()
-    heatmap = np.zeros((grid_size, grid_size), dtype=np.float32)
+    heatmap = np.full((grid_size, grid_size), fill_value, dtype=np.float32)
     for patch_id, value in zip(patch_ids, values, strict=False):
         row, col = divmod(int(patch_id), grid_size)
         heatmap[row, col] = float(value)

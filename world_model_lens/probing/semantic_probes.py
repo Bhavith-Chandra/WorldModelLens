@@ -38,6 +38,17 @@ class SemanticProbeResult:
     semantic_direction: Tensor
 
 
+@dataclass
+class PatchTextAlignmentResult:
+    """Per-patch CLIP text alignment for one I-JEPA component."""
+
+    component: str
+    patch_ids: List[int]
+    concept_scores: Dict[str, np.ndarray]
+    positive_cosines: Dict[str, np.ndarray]
+    negative_cosines: Dict[str, np.ndarray]
+
+
 class SemanticProber:
     """Semantic probing using DINO and CLIP features."""
 
@@ -314,6 +325,114 @@ class CLIPTextProber:
         pred_class = probs.argmax(dim=-1)
 
         return pred_class, probs
+
+    def _extract_patch_clip_features(
+        self,
+        raw_image: Any,
+        patch_ids: List[int],
+        grid_size: int,
+        image_size: int = 224,
+    ) -> Tensor:
+        """Crop each patch, resize to 224×224, return CLIP image embeddings [N, 512]."""
+        from PIL import Image as _PILImage
+
+        patch_extent = image_size // grid_size
+        raw_224 = raw_image.resize((image_size, image_size))
+        features = []
+        for patch_id in patch_ids:
+            row, col = divmod(int(patch_id), grid_size)
+            x, y = col * patch_extent, row * patch_extent
+            patch_crop = raw_224.crop((x, y, x + patch_extent, y + patch_extent))
+            patch_resized = patch_crop.resize((224, 224), _PILImage.BILINEAR)
+            inputs = self.processor(images=patch_resized, return_tensors="pt")
+            inputs = {k: v.to(self.device) for k, v in inputs.items()}
+            with torch.no_grad():
+                feat = self.model.get_image_features(**inputs)
+            features.append(feat.squeeze(0).cpu())
+        return torch.stack(features)  # [N, 512]
+
+    def _train_projector(self, latents: Tensor, clip_features: Tensor, epochs: int = 300) -> "torch.nn.Module":
+        """Train a linear projector: latent_dim → clip_dim."""
+        from world_model_lens.probing.crossmodal import CrossModalProjector
+
+        latents = latents.float().to(self.device)
+        clip_features = F.normalize(clip_features.float().to(self.device), dim=-1)
+        projector = CrossModalProjector(latents.shape[-1], clip_features.shape[-1]).to(self.device)
+        optimizer = torch.optim.Adam(projector.parameters(), lr=1e-3)
+        n = latents.shape[0]
+        for _ in range(epochs):
+            perm = torch.randperm(n, device=self.device)
+            for start in range(0, n, 256):
+                idx = perm[start: start + 256]
+                loss = F.mse_loss(projector(latents[idx]), clip_features[idx])
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
+        projector.eval()
+        return projector
+
+    def compute_patch_text_alignment(
+        self,
+        latents: Tensor,
+        concept_prompts: Dict[str, Tuple[str, str]],
+        patch_ids: Optional[List[int]] = None,
+        component_name: str = "",
+        raw_image: Optional[Any] = None,
+        grid_size: int = 14,
+    ) -> PatchTextAlignmentResult:
+        """Compute per-patch cosine similarities to CLIP text prompts.
+
+        When raw_image is provided a CrossModalProjector is trained to map
+        I-JEPA latents into CLIP image space before comparing with text
+        embeddings.  Without raw_image latents must already be in CLIP space.
+        """
+        patch_ids = patch_ids or list(range(latents.shape[0]))
+
+        if raw_image is not None:
+            clip_patch_features = self._extract_patch_clip_features(
+                raw_image, patch_ids, grid_size
+            )
+            projector = self._train_projector(latents, clip_patch_features)
+            with torch.no_grad():
+                latents_proj = projector(latents.float().to(self.device)).cpu()
+        else:
+            d_latent = latents.shape[-1]
+            d_text = self.encode_text(["test"]).shape[-1]
+            if d_latent != d_text:
+                raise ValueError(
+                    f"Latent dim ({d_latent}) != CLIP text dim ({d_text}). "
+                    "Pass raw_image and grid_size so a projector can be trained."
+                )
+            latents_proj = F.normalize(latents.float(), dim=1)
+
+        latents_norm = F.normalize(latents_proj, dim=1)
+
+        concept_scores: Dict[str, np.ndarray] = {}
+        positive_cosines: Dict[str, np.ndarray] = {}
+        negative_cosines: Dict[str, np.ndarray] = {}
+
+        for concept_name, prompts in concept_prompts.items():
+            if len(prompts) < 2:
+                raise ValueError(
+                    f"Concept '{concept_name}' must provide positive and negative prompts."
+                )
+
+            text_features = self.encode_text([prompts[0], prompts[1]])
+            text_features = F.normalize(text_features, dim=1).cpu()
+
+            pos_scores = (latents_norm @ text_features[0]).detach().cpu().numpy()
+            neg_scores = (latents_norm @ text_features[1]).detach().cpu().numpy()
+            concept_scores[concept_name] = pos_scores - neg_scores
+            positive_cosines[concept_name] = pos_scores
+            negative_cosines[concept_name] = neg_scores
+
+        return PatchTextAlignmentResult(
+            component=component_name,
+            patch_ids=list(patch_ids),
+            concept_scores=concept_scores,
+            positive_cosines=positive_cosines,
+            negative_cosines=negative_cosines,
+        )
 
 
 # ---------------------------------------------------------------------------
