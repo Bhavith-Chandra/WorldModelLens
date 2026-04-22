@@ -1,12 +1,14 @@
 from __future__ import annotations
+
 """Probing layer analyzer - analyze which layers encode which concepts."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any
-import torch
+
 import numpy as np
+import torch
 
 
 @dataclass
@@ -21,6 +23,7 @@ class LayerProbingResult:
     bias: torch.Tensor | None = None
 
 
+# Review: Can be deleted or integrated elsewhere. Tell me if annything can be done about this.
 class LayerProber:
     """Probe multiple layers for concept encoding."""
 

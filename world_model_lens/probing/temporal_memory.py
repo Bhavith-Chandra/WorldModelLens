@@ -7,9 +7,10 @@ This module provides temporal analysis tools that work with ANY world model:
 - Working memory capacity estimation
 """
 
-from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
-import torch
 from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
+
+import torch
 
 if TYPE_CHECKING:
     from world_model_lens.core.activation_cache import ActivationCache
@@ -34,6 +35,7 @@ class TemporalMemoryResult:
         }
 
 
+# Review: Is this even needed? What does this even do right now that's different from other probes?
 class TemporalMemoryProber:
     """Prober for temporal memory and sequential dynamics.
 

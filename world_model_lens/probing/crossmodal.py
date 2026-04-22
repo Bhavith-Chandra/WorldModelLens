@@ -53,6 +53,7 @@ def _get_device() -> torch.device:
 # ---------------------------------------------------------------------------
 
 
+# Review: again, same thing as @layer_probe.py and @geometry.py
 @dataclass
 class CrossModalResult:
     """Aggregated result of a cross-modal probing session.
@@ -389,7 +390,7 @@ class CrossModalProber:
             and per-sample similarities.
         """
         prompt = prompt_template.format(concept)
-        text_features = self.encode_text([prompt])            # [1, D_clip]
+        text_features = self.encode_text([prompt])  # [1, D_clip]
         projected = self.project_latents(latents, projector)  # [N, D_clip]
 
         per_sample = (projected @ text_features.T).squeeze(-1)  # [N]
@@ -435,11 +436,11 @@ class CrossModalProber:
             One result per concept, sorted by descending similarity.
         """
         prompts = [prompt_template.format(c) for c in concepts]
-        text_features = self.encode_text(prompts)             # [C, D_clip]
+        text_features = self.encode_text(prompts)  # [C, D_clip]
         projected = self.project_latents(latents, projector)  # [N, D_clip]
 
-        sims = projected @ text_features.T                    # [N, C]
-        mean_sims = sims.mean(dim=0)                          # [C]
+        sims = projected @ text_features.T  # [N, C]
+        mean_sims = sims.mean(dim=0)  # [C]
 
         results = [
             ConceptQueryResult(
@@ -484,13 +485,9 @@ class CrossModalProber:
         """
         self._load_clip()
         with torch.no_grad():
-            img_inputs = self._clip_processor(
-                images=list(images), return_tensors="pt"
-            )
+            img_inputs = self._clip_processor(images=list(images), return_tensors="pt")
             img_inputs = {k: v.to(self.device) for k, v in img_inputs.items()}
-            image_features = F.normalize(
-                self._clip_model.get_image_features(**img_inputs), dim=-1
-            )
+            image_features = F.normalize(self._clip_model.get_image_features(**img_inputs), dim=-1)
         text_features = self.encode_text(captions)
 
         projected = self.project_latents(vm_latents, projector)
@@ -558,12 +555,12 @@ class CrossModalProber:
         list[list[int]]
             top_k latent indices for each query, ranked by similarity.
         """
-        text_features = self.encode_text(text_queries)          # [Q, D_clip]
+        text_features = self.encode_text(text_queries)  # [Q, D_clip]
         projected = self.project_latents(vm_latents, projector)  # [N, D_clip]
 
-        sims = projected @ text_features.T                      # [N, Q]
+        sims = projected @ text_features.T  # [N, Q]
         top_k = min(top_k, len(vm_latents))
-        top_indices = sims.topk(top_k, dim=0).indices           # [top_k, Q]
+        top_indices = sims.topk(top_k, dim=0).indices  # [top_k, Q]
         return [top_indices[:, q].tolist() for q in range(len(text_queries))]
 
 

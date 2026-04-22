@@ -7,14 +7,16 @@ This module provides geometric analysis tools that work with ANY world model:
 - PCA/UMAP projections
 """
 
-from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
-import torch
 from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
+
+import torch
 
 if TYPE_CHECKING:
     from world_model_lens.core.activation_cache import ActivationCache
 
 
+# Review: same as @layer_probe.py
 @dataclass
 class GeometryResult:
     """Result of geometry analysis."""

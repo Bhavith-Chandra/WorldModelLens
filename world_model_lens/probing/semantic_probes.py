@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
+
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -91,6 +92,8 @@ class SemanticProber:
                     "Install torchvision in the active environment before running DINO semantic probes."
                 )
             try:
+                # Review: Not a huge fan of in function imports.
+                # Either you're gonna justify why you did this or you're gonna patch it.
                 import importlib.util
                 import sys
                 from pathlib import Path
@@ -247,7 +250,9 @@ class SemanticProber:
         if raw_image is not None:
             if patch_ids is None or grid_size is None:
                 raise ValueError("patch_ids and grid_size are required with raw_image.")
-            return self.extract_patch_features(raw_image, patch_ids, grid_size, image_size=image_size)
+            return self.extract_patch_features(
+                raw_image, patch_ids, grid_size, image_size=image_size
+            )
 
         if images is not None:
             return self.extract_features(images).detach().cpu()
@@ -263,11 +268,14 @@ class SemanticProber:
         batch_size: int = 256,
     ) -> "torch.nn.Module":
         """Train a linear projector from latents to semantic feature space."""
+        # Review: Again, don't like local imports done like this. Move them up please
         from world_model_lens.probing.crossmodal import CrossModalProjector
 
         latents = latents.float().to(self.device)
         target_features = F.normalize(target_features.float().to(self.device), dim=-1)
-        projector = CrossModalProjector(latents.shape[-1], target_features.shape[-1]).to(self.device)
+        projector = CrossModalProjector(latents.shape[-1], target_features.shape[-1]).to(
+            self.device
+        )
         optimizer = torch.optim.Adam(projector.parameters(), lr=lr)
         n = latents.shape[0]
 
@@ -383,7 +391,9 @@ class SemanticProber:
             )
             dino_direction = F.normalize(dino_direction, dim=0)
 
-            alignment_scores[concept_name] = float(torch.dot(latent_direction, dino_direction).item())
+            alignment_scores[concept_name] = float(
+                torch.dot(latent_direction, dino_direction).item()
+            )
 
         return alignment_scores
 
@@ -586,7 +596,7 @@ class CLIPTextProber:
         for _ in range(epochs):
             perm = torch.randperm(n, device=self.device)
             for start in range(0, n, 256):
-                idx = perm[start: start + 256]
+                idx = perm[start : start + 256]
                 loss = F.mse_loss(projector(latents[idx]), clip_features[idx])
                 optimizer.zero_grad()
                 loss.backward()
@@ -613,9 +623,7 @@ class CLIPTextProber:
         patch_ids = patch_ids or list(range(latents.shape[0]))
 
         if raw_image is not None:
-            clip_patch_features = self._extract_patch_clip_features(
-                raw_image, patch_ids, grid_size
-            )
+            clip_patch_features = self._extract_patch_clip_features(raw_image, patch_ids, grid_size)
             projector = self._train_projector(
                 latents,
                 clip_patch_features,
@@ -678,6 +686,7 @@ class SemanticAlignmentResult:
     projection_loss: Optional[float] = None
 
 
+# Review: what is this for? Explain please.
 class IJEPASemanticAligner:
     """Align I-JEPA patch latents to CLIP space and measure concept-text alignment.
 
@@ -794,9 +803,9 @@ class IJEPASemanticAligner:
 
             # Project direction into CLIP space
             with torch.no_grad():
-                concept_dir_clip = projector(
-                    concept_dir.unsqueeze(0).to(self.device)
-                ).squeeze(0).cpu()
+                concept_dir_clip = (
+                    projector(concept_dir.unsqueeze(0).to(self.device)).squeeze(0).cpu()
+                )
 
             # CLIP text direction
             text_feats = self.prober.encode_text([pos_prompt, neg_prompt]).cpu()  # [2, 512]

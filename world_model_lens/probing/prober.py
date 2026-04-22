@@ -1,25 +1,23 @@
 """Enhanced linear probing tools with cross-validation for world model interpretability."""
 
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
+
 import numpy as np
 import torch
-from torch import Tensor
-from sklearn.linear_model import LogisticRegression, Ridge, RidgeClassifier
-from sklearn.preprocessing import StandardScaler
+from sklearn.linear_model import LogisticRegression, Ridge
+from sklearn.metrics import (
+    confusion_matrix as sk_confusion_matrix,
+)
+from sklearn.metrics import r2_score
 from sklearn.model_selection import (
-    train_test_split,
-    cross_val_score,
     KFold,
     StratifiedKFold,
-    GridSearchCV,
+    cross_val_score,
+    train_test_split,
 )
-from sklearn.metrics import (
-    accuracy_score,
-    r2_score,
-    confusion_matrix as sk_confusion_matrix,
-    make_scorer,
-)
+from sklearn.preprocessing import StandardScaler
+from torch import Tensor
 
 try:
     from tqdm import tqdm
@@ -51,6 +49,7 @@ class ProbeResult:
     cv_std: float = 0.0
     regularization_alpha: float = 1.0
 
+    # Review: what is this doing here?
     def plot(self, figsize: Tuple[int, int] = (10, 4)):
         """Plot probe results."""
         try:
@@ -86,6 +85,7 @@ class SweepResult:
     results: Dict[str, ProbeResult]
     activation_names: List[str]
     concept_names: List[str]
+    errors: Dict[str, str] = field(default_factory=dict)
 
     def accuracy_matrix(self) -> np.ndarray:
         """Get accuracy matrix [n_concepts, n_activations]."""
@@ -210,6 +210,7 @@ class LatentProber:
             can_stratify = bool((counts >= 2).all())
         else:
             can_stratify = False
+
         X_train, X_test, y_train, y_test = train_test_split(
             X,
             y,
@@ -226,11 +227,13 @@ class LatentProber:
         best_cv_score = 0.0
 
         if is_classification:
+            # Can be probe_type in ['logistic', 'linear']. It's cleaner
             if probe_type == "logistic" or probe_type == "linear":
                 for alpha in self.alphas:
                     model = LogisticRegression(
                         C=1.0 / alpha, max_iter=1000, random_state=self.seed, solver="lbfgs"
                     )
+
                     if use_cv and len(X_train_scaled) >= self.n_folds:
                         cv = StratifiedKFold(
                             n_splits=self.n_folds, shuffle=True, random_state=self.seed
@@ -250,6 +253,7 @@ class LatentProber:
                 model = LogisticRegression(max_iter=1000, random_state=self.seed, solver="lbfgs")
                 best_alpha = 1.0
         else:
+            # Again same thing, can be probe_type in ['ridge', 'linear']
             if probe_type == "ridge" or probe_type == "linear":
                 for alpha in self.alphas:
                     model = Ridge(alpha=alpha, random_state=self.seed)
@@ -338,6 +342,38 @@ class LatentProber:
             regularization_alpha=best_alpha,
         )
 
+    def _resolve_cache_activations(
+        self,
+        cache: Any,
+        component: str,
+        timestep_slice: Optional[slice] = None,
+    ) -> Any:
+        """Resolve cached activations from either an ActivationCache or mapping-like input."""
+        activations = None
+
+        if hasattr(cache, "component_names") or not isinstance(cache, dict):
+            try:
+                activations = cache[component, :]
+            except (KeyError, TypeError, IndexError):
+                activations = None
+
+        if activations is None:
+            try:
+                activations = cache[component]
+            except (KeyError, TypeError, IndexError) as exc:
+                raise KeyError(f"Component '{component}' not found in cache") from exc
+
+        if activations is None:
+            raise KeyError(f"Component '{component}' resolved to None")
+
+        if timestep_slice is not None:
+            activations = activations[timestep_slice]
+
+        if isinstance(activations, Tensor) and activations.dim() == 3:
+            activations = activations.flatten(1)
+
+        return activations
+
     def probe_from_cache(
         self,
         cache: Any,
@@ -345,31 +381,34 @@ class LatentProber:
         labels: np.ndarray,
         concept_name: str,
         timestep_slice: Optional[slice] = None,
+        probe_type: str = "linear",
     ) -> ProbeResult:
         """Train probe from activation cache.
 
         Args:
-            cache: ActivationCache.
+            cache: ActivationCache or mapping-like cache.
             component: Component name to probe.
             labels: Labels per timestep.
             concept_name: Name of the concept.
             timestep_slice: Optional slice for timesteps.
+            probe_type: Probe family to train.
 
         Returns:
             ProbeResult.
         """
-        try:
-            activations = cache[component, :]
-            if activations is None:
-                raise KeyError("Component not found")
-            if timestep_slice is not None:
-                activations = activations[timestep_slice]
-            if activations.dim() == 3:
-                activations = activations.flatten(1)
-        except (KeyError, TypeError):
-            activations = torch.randn(len(labels), 512)
+        activations = self._resolve_cache_activations(
+            cache=cache,
+            component=component,
+            timestep_slice=timestep_slice,
+        )
 
-        return self.train_probe(activations, labels, concept_name, component)
+        return self.train_probe(
+            activations,
+            labels,
+            concept_name,
+            component,
+            probe_type=probe_type,
+        )
 
     def sweep(
         self,
@@ -377,6 +416,7 @@ class LatentProber:
         activation_names: List[str],
         labels_dict: Dict[str, np.ndarray],
         probe_type: str = "ridge",
+        strict: bool = True,
     ) -> SweepResult:
         """Sweep probes across activations and concepts.
 
@@ -385,11 +425,13 @@ class LatentProber:
             activation_names: List of activation names to probe.
             labels_dict: Dict mapping concept names to labels.
             probe_type: Type of probe.
+            strict: When True, raise if any sweep item fails. When False, record failures in the result.
 
         Returns:
             SweepResult with all results.
         """
         results = {}
+        errors = {}
 
         for concept_name, labels in (
             tqdm(labels_dict.items(), desc="Sweeping concepts") if tqdm else labels_dict.items()
@@ -397,15 +439,29 @@ class LatentProber:
             for activation_name in activation_names:
                 key = f"{concept_name}_{activation_name}"
                 try:
-                    result = self.probe_from_cache(cache, activation_name, labels, concept_name)
+                    result = self.probe_from_cache(
+                        cache,
+                        activation_name,
+                        labels,
+                        concept_name,
+                        probe_type=probe_type,
+                    )
                     results[key] = result
-                except Exception as e:
-                    pass
+                except Exception as exc:
+                    error_text = exc.args[0] if exc.args else str(exc)
+                    errors[key] = str(error_text)
+
+        if errors and strict:
+            raise RuntimeError(
+                "Probe sweep encountered failures: "
+                + "; ".join(f"{name}: {msg}" for name, msg in errors.items())
+            )
 
         return SweepResult(
             results=results,
             activation_names=activation_names,
             concept_names=list(labels_dict.keys()),
+            errors=errors,
         )
 
     def probe_multiple_concepts(
