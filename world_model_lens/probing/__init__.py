@@ -26,6 +26,23 @@ from world_model_lens.probing.crossmodal import (
     align_multimodal,
 )
 
+try:
+    from world_model_lens.probing.semantic_probes import (
+        SemanticProber,
+        CLIPTextProber,
+        IJEPASemanticAligner,
+        SemanticAlignmentResult,
+        PatchTextAlignmentResult,
+        DINOAlignmentResult,
+    )
+except ImportError:
+    SemanticProber = None
+    CLIPTextProber = None
+    IJEPASemanticAligner = None
+    SemanticAlignmentResult = None
+    PatchTextAlignmentResult = None
+    DINOAlignmentResult = None
+
 __all__ = [
     "LatentProber",
     "GeometryAnalyzer",
@@ -35,4 +52,10 @@ __all__ = [
     "CrossModalResult",
     "ConceptQueryResult",
     "align_multimodal",
+    "SemanticProber",
+    "CLIPTextProber",
+    "IJEPASemanticAligner",
+    "SemanticAlignmentResult",
+    "PatchTextAlignmentResult",
+    "DINOAlignmentResult",
 ]

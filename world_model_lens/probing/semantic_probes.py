@@ -49,6 +49,17 @@ class PatchTextAlignmentResult:
     negative_cosines: Dict[str, np.ndarray]
 
 
+@dataclass
+class DINOAlignmentResult:
+    """Patch-level DINO alignment for one I-JEPA component."""
+
+    component: str
+    model_name: str
+    r2_projection: float
+    concept_feature_alignments: Dict[str, float]
+    projection_loss: Optional[float] = None
+
+
 class SemanticProber:
     """Semantic probing using DINO and CLIP features."""
 
@@ -74,10 +85,51 @@ class SemanticProber:
             return
 
         if "dino" in self.model_name.lower():
-            try:
-                self.model = torch.hub.load(
-                    "facebookresearch/dino:main", self.model_name, pretrained=True
+            if not TORCHVISION_AVAILABLE:
+                raise ImportError(
+                    "torchvision is required to load DINO models via torch.hub. "
+                    "Install torchvision in the active environment before running DINO semantic probes."
                 )
+            try:
+                import importlib.util
+                import sys
+                from pathlib import Path
+
+                repo_dir = Path(
+                    torch.hub._get_cache_or_reload(
+                        "facebookresearch/dino:main",
+                        force_reload=False,
+                        trust_repo=True,
+                        calling_fn="load",
+                    )
+                )
+                hubconf_path = repo_dir / "hubconf.py"
+                module_name = "_world_model_lens_dino_hubconf"
+                original_sys_path = list(sys.path)
+                saved_modules = {}
+
+                for name in ("utils", "vision_transformer", module_name):
+                    if name in sys.modules:
+                        saved_modules[name] = sys.modules.pop(name)
+
+                try:
+                    sys.path = [str(repo_dir), *original_sys_path]
+                    spec = importlib.util.spec_from_file_location(module_name, hubconf_path)
+                    if spec is None or spec.loader is None:
+                        raise ImportError(f"Could not load hubconf from {hubconf_path}")
+                    hub_module = importlib.util.module_from_spec(spec)
+                    sys.modules[module_name] = hub_module
+                    spec.loader.exec_module(hub_module)
+                    self.model = getattr(hub_module, self.model_name)(pretrained=True)
+                finally:
+                    for name in ("utils", "vision_transformer", module_name):
+                        mod = sys.modules.get(name)
+                        mod_file = getattr(mod, "__file__", None)
+                        if mod_file is not None and str(repo_dir) in str(mod_file):
+                            sys.modules.pop(name, None)
+                    sys.path = original_sys_path
+                    for name, mod in saved_modules.items():
+                        sys.modules[name] = mod
             except Exception as exc:
                 raise ImportError(
                     f"Could not load DINO model '{self.model_name}' via torch.hub. "
@@ -98,11 +150,56 @@ class SemanticProber:
                 f"Model {self.model_name} not available. Install transformers or torchvision."
             )
 
-    def extract_features(self, images: Tensor) -> Tensor:
+    def _prepare_dino_inputs(self, images: Any) -> Tensor:
+        """Convert image-like inputs to DINO-ready tensors."""
+        if isinstance(images, Tensor):
+            tensor = images.detach().float()
+            if tensor.dim() == 3:
+                tensor = tensor.unsqueeze(0)
+            return tensor.to(self.device)
+
+        mean = torch.tensor([0.485, 0.456, 0.406], dtype=torch.float32).view(3, 1, 1)
+        std = torch.tensor([0.229, 0.224, 0.225], dtype=torch.float32).view(3, 1, 1)
+
+        processed = []
+        for image in images:
+            arr = np.asarray(image.convert("RGB"), dtype=np.float32) / 255.0
+            arr = np.transpose(arr, (2, 0, 1))
+            tensor = torch.from_numpy(arr)
+            processed.append((tensor - mean) / std)
+
+        if not processed:
+            raise ValueError("No images provided for DINO feature extraction.")
+
+        return torch.stack(processed, dim=0).to(self.device)
+
+    def _extract_patch_crops(
+        self,
+        raw_image: Any,
+        patch_ids: List[int],
+        grid_size: int,
+        image_size: int = 224,
+    ) -> List[Any]:
+        """Crop raw_image into per-patch PIL images."""
+        from PIL import Image as _PILImage
+
+        patch_extent = image_size // grid_size
+        raw_224 = raw_image.resize((image_size, image_size))
+        patch_images = []
+
+        for patch_id in patch_ids:
+            row, col = divmod(int(patch_id), grid_size)
+            x, y = col * patch_extent, row * patch_extent
+            patch_crop = raw_224.crop((x, y, x + patch_extent, y + patch_extent))
+            patch_images.append(patch_crop.resize((224, 224), _PILImage.BILINEAR))
+
+        return patch_images
+
+    def extract_features(self, images: Any) -> Tensor:
         """Extract semantic features from images.
 
         Args:
-            images: Image tensor [B, C, H, W].
+            images: Image tensor [B, C, H, W] or iterable of PIL images.
 
         Returns:
             Feature tensor [B, D].
@@ -110,65 +207,155 @@ class SemanticProber:
         if self.model is None:
             self.load_model()
 
-        images = images.to(self.device)
-
         with torch.no_grad():
             if "dino" in self.model_name.lower():
+                images = self._prepare_dino_inputs(images)
                 features = self.model(images)
                 if features.dim() == 3:
                     features = features[:, 0]  # [CLS] token
             elif "clip" in self.model_name.lower():
+                images = images.to(self.device)
                 inputs = self.processor(images=images, return_tensors="pt")
                 inputs = {k: v.to(self.device) for k, v in inputs.items()}
                 features = self.model.get_image_features(**inputs)
             else:
+                images = images.to(self.device)
                 features = self.model(images)
 
         return features
 
-    def project_onto_dino(self, latents: Tensor, images: Optional[Tensor] = None) -> Tensor:
-        """Project latent representations onto DINO feature space.
+    def extract_patch_features(
+        self,
+        raw_image: Any,
+        patch_ids: List[int],
+        grid_size: int,
+        image_size: int = 224,
+    ) -> Tensor:
+        """Crop each patch and encode it with the configured semantic model."""
+        patch_images = self._extract_patch_crops(raw_image, patch_ids, grid_size, image_size)
+        return self.extract_features(patch_images).detach().cpu()
 
-        Args:
-            latents: World model latents [N, D_latent].
-            images: Optional images for feature extraction.
+    def _resolve_reference_features(
+        self,
+        images: Optional[Any] = None,
+        raw_image: Optional[Any] = None,
+        patch_ids: Optional[List[int]] = None,
+        grid_size: Optional[int] = None,
+        image_size: int = 224,
+    ) -> Tensor:
+        """Resolve reference semantic features from full images or patch crops."""
+        if raw_image is not None:
+            if patch_ids is None or grid_size is None:
+                raise ValueError("patch_ids and grid_size are required with raw_image.")
+            return self.extract_patch_features(raw_image, patch_ids, grid_size, image_size=image_size)
 
-        Returns:
-            Projected features [N, D_dino].
-        """
-        if images is None:
-            return torch.randn(len(latents), 768, device=self.device)
+        if images is not None:
+            return self.extract_features(images).detach().cpu()
 
-        dino_features = self.extract_features(images)
+        raise ValueError("Provide either images or raw_image+patch_ids+grid_size.")
 
-        if dino_features.shape[0] != latents.shape[0]:
-            dino_features = dino_features[: latents.shape[0]]
+    def _train_projector(
+        self,
+        latents: Tensor,
+        target_features: Tensor,
+        epochs: int = 300,
+        lr: float = 1e-3,
+        batch_size: int = 256,
+    ) -> "torch.nn.Module":
+        """Train a linear projector from latents to semantic feature space."""
+        from world_model_lens.probing.crossmodal import CrossModalProjector
 
-        return dino_features
+        latents = latents.float().to(self.device)
+        target_features = F.normalize(target_features.float().to(self.device), dim=-1)
+        projector = CrossModalProjector(latents.shape[-1], target_features.shape[-1]).to(self.device)
+        optimizer = torch.optim.Adam(projector.parameters(), lr=lr)
+        n = latents.shape[0]
+
+        for _ in range(epochs):
+            perm = torch.randperm(n, device=self.device)
+            for start in range(0, n, batch_size):
+                idx = perm[start : start + batch_size]
+                loss = F.mse_loss(projector(latents[idx]), target_features[idx])
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
+
+        projector.eval()
+        return projector
+
+    def _compute_r2(self, latents: Tensor, target_features: Tensor, projector: Any) -> float:
+        """R^2 between projected latents and target semantic features."""
+        with torch.no_grad():
+            predicted = projector(latents.float().to(self.device)).cpu()
+        target = F.normalize(target_features.float().cpu(), dim=-1)
+        ss_res = ((predicted - target) ** 2).sum()
+        ss_tot = ((target - target.mean(0)) ** 2).sum()
+        return float(1.0 - (ss_res / (ss_tot + 1e-8)).item())
+
+    def project_onto_dino(
+        self,
+        latents: Tensor,
+        images: Optional[Any] = None,
+        raw_image: Optional[Any] = None,
+        patch_ids: Optional[List[int]] = None,
+        grid_size: Optional[int] = None,
+        projector: Optional[Any] = None,
+        projector_epochs: int = 300,
+    ) -> Tensor:
+        """Project latent representations onto DINO feature space."""
+        if projector is None:
+            reference_features = self._resolve_reference_features(
+                images=images,
+                raw_image=raw_image,
+                patch_ids=patch_ids,
+                grid_size=grid_size,
+            )
+            if reference_features.shape[0] != latents.shape[0]:
+                raise ValueError(
+                    "Latents and DINO reference features must have the same number of samples."
+                )
+            projector = self._train_projector(
+                latents,
+                reference_features,
+                epochs=projector_epochs,
+            )
+
+        with torch.no_grad():
+            projected = projector(latents.float().to(self.device)).cpu()
+
+        return F.normalize(projected, dim=-1)
 
     def compute_alignment(
         self,
         latents: Tensor,
         concept_labels: Dict[str, Tensor],
-        images: Optional[Tensor] = None,
+        images: Optional[Any] = None,
+        raw_image: Optional[Any] = None,
+        patch_ids: Optional[List[int]] = None,
+        grid_size: Optional[int] = None,
+        projector: Optional[Any] = None,
+        projector_epochs: int = 300,
     ) -> Dict[str, float]:
-        """Compute alignment between latents and semantic concepts.
+        """Compute DINO-feature alignment between latents and semantic concepts."""
+        dino_features = self._resolve_reference_features(
+            images=images,
+            raw_image=raw_image,
+            patch_ids=patch_ids,
+            grid_size=grid_size,
+        )
 
-        Args:
-            latents: Latent representations [N, D].
-            concept_labels: Dict of concept name -> binary labels.
-            images: Optional images for DINO features.
+        if dino_features.shape[0] != latents.shape[0]:
+            raise ValueError("Latents and DINO features must have the same number of samples.")
 
-        Returns:
-            Dict mapping concept to alignment score.
-        """
-        if images is not None:
-            dino_features = self.project_onto_dino(latents, images)
-        else:
-            return {concept: 0.0 for concept in concept_labels.keys()}
+        if projector is None:
+            projector = self._train_projector(
+                latents,
+                dino_features,
+                epochs=projector_epochs,
+            )
 
-        latents_norm = F.normalize(latents, dim=1)
-        dino_norm = F.normalize(dino_features, dim=1)
+        projected_latents = self.project_onto_dino(latents, projector=projector)
+        dino_norm = F.normalize(dino_features.float().cpu(), dim=1)
 
         alignment_scores = {}
 
@@ -177,25 +364,65 @@ class SemanticProber:
                 alignment_scores[concept_name] = 0.0
                 continue
 
-            labels = labels.to(self.device)
+            labels = torch.as_tensor(labels).cpu()
 
             positive_mask = labels == 1
             negative_mask = labels == 0
 
-            if positive_mask.sum() < 1 or negative_mask.sum() < 1:
+            if positive_mask.sum() < 2 or negative_mask.sum() < 2:
                 alignment_scores[concept_name] = 0.0
                 continue
 
-            positive_latents = latents_norm[positive_mask].mean(dim=0)
-            negative_latents = latents_norm[negative_mask].mean(dim=0)
+            latent_direction = projected_latents[positive_mask].mean(dim=0) - projected_latents[
+                negative_mask
+            ].mean(dim=0)
+            latent_direction = F.normalize(latent_direction, dim=0)
 
-            concept_direction = positive_latents - negative_latents
-            concept_direction = concept_direction / (concept_direction.norm() + 1e-8)
+            dino_direction = dino_norm[positive_mask].mean(dim=0) - dino_norm[negative_mask].mean(
+                dim=0
+            )
+            dino_direction = F.normalize(dino_direction, dim=0)
 
-            similarity = (latents_norm @ concept_direction).abs().mean()
-            alignment_scores[concept_name] = float(similarity.item())
+            alignment_scores[concept_name] = float(torch.dot(latent_direction, dino_direction).item())
 
         return alignment_scores
+
+    def run_patch_alignment(
+        self,
+        raw_image: Any,
+        activations: Tensor,
+        patch_ids: List[int],
+        grid_size: int,
+        concept_labels: Dict[str, np.ndarray],
+        component_name: str,
+        projector_epochs: int = 300,
+    ) -> DINOAlignmentResult:
+        """Run a full patch-level DINO alignment pipeline for one component."""
+        reference_features = self.extract_patch_features(raw_image, patch_ids, grid_size)
+        if reference_features.shape[0] != activations.shape[0]:
+            raise ValueError("Patch feature count does not match activation count.")
+
+        projector = self._train_projector(
+            activations.float(),
+            reference_features,
+            epochs=projector_epochs,
+        )
+        r2 = self._compute_r2(activations.float(), reference_features, projector)
+        concept_alignments = self.compute_alignment(
+            activations.float(),
+            concept_labels=concept_labels,
+            raw_image=raw_image,
+            patch_ids=patch_ids,
+            grid_size=grid_size,
+            projector=projector,
+        )
+
+        return DINOAlignmentResult(
+            component=component_name,
+            model_name=self.model_name,
+            r2_projection=r2,
+            concept_feature_alignments=concept_alignments,
+        )
 
     def find_semantic_directions(
         self,
@@ -203,16 +430,7 @@ class SemanticProber:
         labels: Tensor,
         n_directions: int = 10,
     ) -> List[Tensor]:
-        """Find semantic directions in latent space.
-
-        Args:
-            latents: Latent tensor [N, D].
-            labels: Concept labels [N].
-            n_directions: Number of directions to find.
-
-        Returns:
-            List of semantic direction vectors.
-        """
+        """Find semantic directions in latent space."""
         unique_labels = torch.unique(labels)
 
         directions = []
@@ -351,7 +569,12 @@ class CLIPTextProber:
             features.append(feat.squeeze(0).cpu())
         return torch.stack(features)  # [N, 512]
 
-    def _train_projector(self, latents: Tensor, clip_features: Tensor, epochs: int = 300) -> "torch.nn.Module":
+    def _train_projector(
+        self,
+        latents: Tensor,
+        clip_features: Tensor,
+        epochs: int = 300,
+    ) -> "torch.nn.Module":
         """Train a linear projector: latent_dim → clip_dim."""
         from world_model_lens.probing.crossmodal import CrossModalProjector
 
@@ -379,6 +602,7 @@ class CLIPTextProber:
         component_name: str = "",
         raw_image: Optional[Any] = None,
         grid_size: int = 14,
+        projector_epochs: int = 300,
     ) -> PatchTextAlignmentResult:
         """Compute per-patch cosine similarities to CLIP text prompts.
 
@@ -392,7 +616,11 @@ class CLIPTextProber:
             clip_patch_features = self._extract_patch_clip_features(
                 raw_image, patch_ids, grid_size
             )
-            projector = self._train_projector(latents, clip_patch_features)
+            projector = self._train_projector(
+                latents,
+                clip_patch_features,
+                epochs=projector_epochs,
+            )
             with torch.no_grad():
                 latents_proj = projector(latents.float().to(self.device)).cpu()
         else:

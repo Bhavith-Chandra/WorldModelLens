@@ -33,14 +33,16 @@ _CLIP_CONCEPT_PROMPTS = {
 from world_model_lens import LatentProber
 from world_model_lens.analysis.metrics import DisentanglementEvaluationSuite
 try:
-    from world_model_lens.probing.semantic_probes import IJEPASemanticAligner
+    from world_model_lens.probing.semantic_probes import IJEPASemanticAligner, SemanticProber
     _SEMANTIC_AVAILABLE = True
 except Exception:
+    IJEPASemanticAligner = None
+    SemanticProber = None
     _SEMANTIC_AVAILABLE = False
 from utils import (
     OUTPUT_DIR,
     PatchLabelBuilder,
-    build_patch_factors,
+    build_disentanglement_factors,
     build_patch_heatmap,
     build_patch_labels,
     collect_ijepa_artifacts,
@@ -69,6 +71,19 @@ def parse_args() -> argparse.Namespace:
         type=str,
         default=str(OUTPUT_DIR),
         help="Directory where plots and text summaries will be written.",
+    )
+    parser.add_argument(
+        "--dino-model",
+        type=str,
+        default="dino_vitb16",
+        choices=["dino_vits16", "dino_vits8", "dino_vitb16", "dino_vitb8"],
+        help="DINO backbone for semantic probes.",
+    )
+    parser.add_argument(
+        "--semantic-projector-epochs",
+        type=int,
+        default=300,
+        help="Training epochs for DINO/CLIP latent projectors used by semantic probes.",
     )
     return parser.parse_args()
 _GEOMETRIC_PROBE_SPECS = [
@@ -272,10 +287,18 @@ def _plot_component_heatmaps(artifacts, output_path: Path) -> None:
     n = max(1, len(component_names))
     fig, axes = plt.subplots(1, n, figsize=(5 * n + 0.5, 5.5))
     axes = np.atleast_1d(axes)
+    # Compute global min/max across all components for consistent color scale
+    all_energies = []
+    for component_name in component_names:
+        component = artifacts.components[component_name]
+        energy = component.activations.norm(dim=1)
+        all_energies.append(energy)
+    all_energies_tensor = torch.cat(all_energies)
+    global_emin = float(all_energies_tensor.min())
+    global_emax = float(all_energies_tensor.max())
     for ax, component_name in zip(axes, component_names, strict=False):
         component = artifacts.components[component_name]
         energy = component.activations.norm(dim=1)
-        emin, emax = float(energy.min()), float(energy.max())
         heatmap = build_patch_heatmap(component.patch_ids, energy, artifacts.grid_size)
         ax.imshow(artifacts.raw_image.resize((224, 224)), alpha=0.60)
         im = ax.imshow(
@@ -284,16 +307,17 @@ def _plot_component_heatmaps(artifacts, output_path: Path) -> None:
             alpha=0.65,
             extent=(0, 224, 224, 0),
             interpolation="nearest",
-            vmin=emin,
-            vmax=emax,
+            vmin=global_emin,
+            vmax=global_emax,
         )
         cb = plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
         cb.set_label("L2 norm", fontsize=8)
         cb.ax.tick_params(labelsize=8)
+        emin, emax = float(energy.min()), float(energy.max())
         erange = emax - emin
-        pct = erange / emax * 100
+        pct = erange / emax * 100 if emax > 0 else 0
         title = component_name.replace("_", " ").title()
-        ax.set_title(f"{title}\nΔ={erange:.4f}  ({pct:.2f}% of max)", fontweight="bold", pad=6, fontsize=9)
+        ax.set_title(f"{title}\nDelta={erange:.4f}  ({pct:.2f}% of max)", fontweight="bold", pad=6, fontsize=9)
         ax.axis("off")
     fig.suptitle("Per-Patch Activation Energy\n(L2 norm of latent feature vector per patch)", fontsize=12, fontweight="bold")
     fig.tight_layout()
@@ -305,6 +329,8 @@ def _write_summary(
     checkpoint_path: Path,
     component_results,
     disentanglement_result,
+    semantic_results,
+    dino_results,
     output_path: Path,
 ) -> None:
     lines = []
@@ -332,9 +358,40 @@ def _write_summary(
         lines.append("")
     lines.append("Disentanglement Summary")
     lines.append("-" * 40)
+    lines.append(f"evaluated_components: {len(disentanglement_result.component_results)}")
     for metric_name, score in disentanglement_result.summary_scores.items():
         lines.append(f"{metric_name}: {score:.4f}")
+    if disentanglement_result.component_errors:
+        lines.append("")
+        lines.append("Disentanglement Errors")
+        lines.append("-" * 40)
+        for component_name, error_text in disentanglement_result.component_errors.items():
+            lines.append(f"{component_name}: {error_text}")
     lines.append("")
+    if dino_results is not None:
+        lines.append("DINO Semantic Alignment")
+        lines.append("-" * 40)
+        for component_name, result in dino_results.items():
+            summary = "  ".join(
+                f"{concept}={score:.4f}"
+                for concept, score in result.concept_feature_alignments.items()
+            )
+            lines.append(
+                f"{component_name}: r2_projection={result.r2_projection:.4f} {summary}".rstrip()
+            )
+        lines.append("")
+    if semantic_results is not None:
+        lines.append("CLIP Semantic Alignment")
+        lines.append("-" * 40)
+        for component_name, result in semantic_results.items():
+            summary = "  ".join(
+                f"{concept}={score:.4f}"
+                for concept, score in result.concept_text_alignments.items()
+            )
+            lines.append(
+                f"{component_name}: r2_projection={result.r2_projection:.4f} {summary}".rstrip()
+            )
+        lines.append("")
     output_path.write_text("\n".join(lines), encoding="utf-8")
 def _plot_probe_heatmap(
     component_results: dict,
@@ -353,14 +410,26 @@ def _plot_probe_heatmap(
                 all_concepts.append(c)
                 seen.add(c)
     matrix = np.full((len(all_concepts), len(component_names)), np.nan)
+    has_r2 = False
     for j, cname in enumerate(component_names):
         for i, concept in enumerate(all_concepts):
             r = component_results[cname].get(concept)
             if r is None:
                 continue
-            matrix[i, j] = r.r2 if r.r2 is not None else r.accuracy
+            if r.r2 is not None:
+                matrix[i, j] = r.r2
+                has_r2 = True
+            else:
+                matrix[i, j] = r.accuracy
     fig, ax = plt.subplots(figsize=(max(6, len(component_names) * 2.2), max(5, len(all_concepts) * 0.55)))
-    im = ax.imshow(matrix, cmap="RdYlGn", vmin=0, vmax=1, aspect="auto")
+    # Use symmetric scale for R² (which can be negative); accuracy stays 0-1
+    if has_r2 and np.nanmin(matrix) < 0:
+        vmin, vmax = -1, 1
+        cmap = "RdBu_r"
+    else:
+        vmin, vmax = 0, 1
+        cmap = "RdYlGn"
+    im = ax.imshow(matrix, cmap=cmap, vmin=vmin, vmax=vmax, aspect="auto")
     ax.set_xticks(range(len(component_names)))
     ax.set_xticklabels([c.replace("_", "\n") for c in component_names], fontsize=9)
     ax.set_yticks(range(len(all_concepts)))
@@ -379,7 +448,143 @@ def _plot_probe_heatmap(
     fig.tight_layout()
     fig.savefig(output_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
-def _run_semantic_probes(artifacts) -> dict | None:
+def _run_dino_semantic_probes(
+    artifacts,
+    dino_model: str = "dino_vitb16",
+    projector_epochs: int = 300,
+) -> dict | None:
+    """Run DINO semantic alignment probes across all I-JEPA components."""
+    if not _SEMANTIC_AVAILABLE:
+        print("  [dino-semantic] semantic probes unavailable - skipping DINO alignment probes.")
+        return None
+    try:
+        prober = SemanticProber(model_name=dino_model)
+    except Exception as exc:
+        print(f"  [dino-semantic] Could not initialise SemanticProber: {exc}")
+        return None
+    results = {}
+    for component_name, component in artifacts.components.items():
+        labels = build_patch_labels(component.patch_ids, artifacts.grid_size)
+        cls_labels = {k: v for k, v in labels.items() if k in _CLIP_CONCEPT_PROMPTS}
+        try:
+            result = prober.run_patch_alignment(
+                raw_image=artifacts.raw_image,
+                activations=component.activations,
+                patch_ids=component.patch_ids,
+                grid_size=artifacts.grid_size,
+                concept_labels=cls_labels,
+                component_name=component_name,
+                projector_epochs=projector_epochs,
+            )
+            results[component_name] = result
+            print(
+                f"  [dino-semantic] {component_name}: R^2={result.r2_projection:.3f}  "
+                + "  ".join(
+                    f"{c}={v:.3f}" for c, v in result.concept_feature_alignments.items()
+                )
+            )
+        except Exception as exc:
+            print(f"  [dino-semantic] {component_name} failed: {exc}")
+    return results or None
+
+
+def _plot_dino_alignment(dino_results: dict, output_path: Path) -> None:
+    """Two-panel plot: DINO concept-direction cosine similarity + projector R^2."""
+    component_names = list(dino_results.keys())
+    concepts = list(_CLIP_CONCEPT_PROMPTS.keys())
+    n_comps = len(component_names)
+    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+
+    ax = axes[0]
+    bar_w = 0.22
+    x = np.arange(len(concepts))
+    for i, cname in enumerate(component_names):
+        res = dino_results[cname]
+        vals = [res.concept_feature_alignments.get(c, 0.0) for c in concepts]
+        offset = (i - n_comps / 2 + 0.5) * bar_w
+        color = _COMPONENT_COLORS.get(cname, f"C{i}")
+        bars = ax.bar(
+            x + offset,
+            vals,
+            bar_w,
+            label=cname.replace("_", " "),
+            color=color,
+            alpha=0.88,
+            edgecolor="white",
+        )
+        for bar, val in zip(bars, vals, strict=False):
+            yoff = 0.012 if val >= 0 else -0.03
+            va = "bottom" if val >= 0 else "top"
+            ax.text(
+                bar.get_x() + bar.get_width() / 2,
+                val + yoff,
+                f"{val:.2f}",
+                ha="center",
+                va=va,
+                fontsize=8,
+                fontweight="bold",
+            )
+    ax.axhline(0, color="#555", linewidth=1.0)
+    ax.set_xticks(x)
+    ax.set_xticklabels([_CONCEPT_LABELS[c] for c in concepts], fontsize=9)
+    ax.set_ylabel("Cosine Similarity (DINO concept vs projected I-JEPA direction)", fontsize=9)
+    ax.set_title(
+        "DINO Feature - I-JEPA Concept Direction Alignment\n"
+        "(positive = semantically aligned with DINO patch features)",
+        fontweight="bold",
+        fontsize=9,
+    )
+    ax.legend(fontsize=8, framealpha=0.9, loc="lower right")
+    ax.grid(axis="y", alpha=0.3, linewidth=0.7)
+    ax.spines[["top", "right"]].set_visible(False)
+
+    ax2 = axes[1]
+    r2_vals = [dino_results[c].r2_projection for c in component_names]
+    colors = [_COMPONENT_COLORS.get(c, "gray") for c in component_names]
+    bars2 = ax2.bar(
+        range(len(component_names)),
+        r2_vals,
+        color=colors,
+        alpha=0.88,
+        edgecolor="white",
+        width=0.5,
+    )
+    for bar, val in zip(bars2, r2_vals, strict=False):
+        yoff = 0.02 if val >= 0 else -0.05
+        va = "bottom" if val >= 0 else "top"
+        ax2.text(
+            bar.get_x() + bar.get_width() / 2,
+            val + yoff,
+            f"{val:.3f}",
+            ha="center",
+            va=va,
+            fontsize=9,
+            fontweight="bold",
+        )
+    ax2.set_xticks(range(len(component_names)))
+    ax2.set_xticklabels([c.replace("_", "\n") for c in component_names], fontsize=9)
+    r2_min = min(r2_vals) if r2_vals else 0
+    r2_max = max(r2_vals) if r2_vals else 1
+    ymin = min(r2_min - 0.15, -0.1)
+    ymax = max(r2_max + 0.15, 1.15)
+    ax2.set_ylim(ymin, ymax)
+    ax2.set_ylabel("R^2  (I-JEPA latents -> DINO patch embeddings)", fontsize=9)
+    ax2.set_title(
+        "DINO Projector R^2\n(how much of DINO patch structure lives in I-JEPA?)",
+        fontweight="bold",
+        fontsize=9,
+    )
+    ax2.axhline(1.0, color="#888", linestyle="--", linewidth=0.8, alpha=0.5)
+    ax2.grid(axis="y", alpha=0.3, linewidth=0.7)
+    ax2.spines[["top", "right"]].set_visible(False)
+
+    fig.suptitle("DINO Semantic Alignment Probes on I-JEPA Patch Latents", fontsize=13, fontweight="bold")
+    fig.subplots_adjust(left=0.07, right=0.97, top=0.82, bottom=0.13, wspace=0.35)
+    fig.savefig(output_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+
+def _run_semantic_probes(artifacts, projector_epochs: int = 300) -> dict | None:
     """Run CLIP semantic alignment probes across all I-JEPA components.
     Returns a dict mapping component name -> SemanticAlignmentResult,
     or None when the transformers package is unavailable.
@@ -405,6 +610,7 @@ def _run_semantic_probes(artifacts) -> dict | None:
                 concept_labels=cls_labels,
                 concept_prompts=_CLIP_CONCEPT_PROMPTS,
                 component_name=component_name,
+                projector_epochs=projector_epochs,
             )
             results[component_name] = result
             print(f"  [semantic] {component_name}: R²={result.r2_projection:.3f}  "
@@ -455,11 +661,17 @@ def _plot_semantic_alignment(semantic_results: dict, output_path: Path) -> None:
     bars2 = ax2.bar(range(len(component_names)), r2_vals, color=colors, alpha=0.88,
                     edgecolor="white", width=0.5)
     for bar, val in zip(bars2, r2_vals, strict=False):
-        ax2.text(bar.get_x() + bar.get_width() / 2, val + 0.01, f"{val:.3f}",
-                 ha="center", va="bottom", fontsize=9, fontweight="bold")
+        yoff = 0.02 if val >= 0 else -0.05
+        va = "bottom" if val >= 0 else "top"
+        ax2.text(bar.get_x() + bar.get_width() / 2, val + yoff, f"{val:.3f}",
+                 ha="center", va=va, fontsize=9, fontweight="bold")
     ax2.set_xticks(range(len(component_names)))
     ax2.set_xticklabels([c.replace("_", "\n") for c in component_names], fontsize=9)
-    ax2.set_ylim(0, 1.15)
+    r2_min = min(r2_vals) if r2_vals else 0
+    r2_max = max(r2_vals) if r2_vals else 1
+    ymin = min(r2_min - 0.15, -0.1)
+    ymax = max(r2_max + 0.15, 1.15)
+    ax2.set_ylim(ymin, ymax)
     ax2.set_ylabel("R^2  (I-JEPA latents -> CLIP image patch embeddings)", fontsize=9)
     ax2.set_title(
         "CrossModal Projector R^2\n(how much of CLIP patch structure lives in I-JEPA?)",
@@ -472,7 +684,7 @@ def _plot_semantic_alignment(semantic_results: dict, output_path: Path) -> None:
     fig.subplots_adjust(left=0.07, right=0.97, top=0.82, bottom=0.13, wspace=0.35)
     fig.savefig(output_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
-def _run_patch_semantic_probes(artifacts) -> dict | None:
+def _run_patch_semantic_probes(artifacts, projector_epochs: int = 300) -> dict | None:
     """Run per-patch CLIP text similarity probes across all I-JEPA components."""
     if not _SEMANTIC_AVAILABLE:
         print("  [patch-semantic] transformers not installed — skipping patch text probes.")
@@ -493,6 +705,7 @@ def _run_patch_semantic_probes(artifacts) -> dict | None:
                 component_name=component_name,
                 raw_image=artifacts.raw_image,
                 grid_size=artifacts.grid_size,
+                projector_epochs=projector_epochs,
             )
             results[component_name] = result
             summary = "  ".join(
@@ -572,7 +785,7 @@ def _plot_patch_semantic_alignment(patch_semantic_results: dict, artifacts, outp
             mean_score = float(np.mean(scores))
             ax.set_title(
                 f"{component_name.replace('_', ' ').title()}\n"
-                f"{_CONCEPT_LABELS[concept]}  μ={mean_score:+.3f}",
+                f"{_CONCEPT_LABELS[concept]}  mean={mean_score:+.3f}",
                 fontsize=8.5,
                 fontweight="bold",
                 pad=4,
@@ -586,10 +799,10 @@ def _plot_patch_semantic_alignment(patch_semantic_results: dict, artifacts, outp
 
     if im_ref is not None:
         fig.colorbar(im_ref, cax=cax)
-        cax.set_ylabel("cosine(pos text) − cosine(neg text)", fontsize=8, labelpad=6)
+        cax.set_ylabel("cosine(pos text) - cosine(neg text)", fontsize=8, labelpad=6)
         cax.tick_params(labelsize=7)
 
-    fig.suptitle("Per-Patch CLIP Text Similarity Maps", fontsize=13, fontweight="bold")
+    fig.suptitle("Per-Patch CLIP Text Similarity Maps\n(grey = patches not in component)", fontsize=13, fontweight="bold")
     fig.savefig(output_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
 def main() -> None:
@@ -610,7 +823,6 @@ def main() -> None:
     prober = LatentProber(seed=42)
     component_results = {}
     component_labels = {}
-    disentanglement_inputs = {}
     for component_name, component in artifacts.components.items():
         results, labels = _probe_component(
             prober=prober,
@@ -622,17 +834,38 @@ def main() -> None:
         )
         component_results[component_name] = results
         component_labels[component_name] = labels
-        disentanglement_inputs[component_name] = component.activations
-    cache_proxy = {name: component.activations for name, component in artifacts.components.items()}
-    factor_labels = build_patch_factors(
-        artifacts.components["target_encoding"].patch_ids if "target_encoding" in artifacts.components else artifacts.components[next(iter(artifacts.components))].patch_ids,
-        artifacts.grid_size,
+    from experiment_utils import collect_manual_components_and_attention
+
+    manual_components, _ = collect_manual_components_and_attention(
+        adapter,
+        image_tensor,
+        artifacts.context_ids,
+        artifacts.target_ids,
     )
+    disentanglement_component_names = sorted(
+        name
+        for name in manual_components
+        if name.startswith("context_encoder.")
+        or name.startswith("target_encoder.")
+        or name.startswith("predictor.")
+    )
+    disentanglement_cache = {
+        name: manual_components[name].activations
+        for name in disentanglement_component_names
+    }
+    disentanglement_factors = {
+        name: build_disentanglement_factors(
+            manual_components[name].patch_ids,
+            artifacts.grid_size,
+            image_size=getattr(config, "img_size", 224),
+        )
+        for name in disentanglement_component_names
+    }
     disentangler = DisentanglementEvaluationSuite()
     disentanglement_result = disentangler.evaluate_components(
-        cache=cache_proxy,
-        factors=factor_labels,
-        components=list(artifacts.components.keys()),
+        cache=disentanglement_cache,
+        factors=disentanglement_factors,
+        components=disentanglement_component_names,
         metrics=["MIG", "DCI", "SAP"],
     )
     # --- Single-image heatmap (all concepts including content labels) ---
@@ -660,10 +893,22 @@ def main() -> None:
             n_images=dataset.n_images,
         )
         print(f"Multi-image probing done — {dataset.n_patches_total} total patches.")
+    print("Running DINO semantic alignment probes...")
+    dino_results = _run_dino_semantic_probes(
+        artifacts,
+        dino_model=args.dino_model,
+        projector_epochs=args.semantic_projector_epochs,
+    )
     print("Running CLIP semantic alignment probes...")
-    semantic_results = _run_semantic_probes(artifacts)
+    semantic_results = _run_semantic_probes(
+        artifacts,
+        projector_epochs=args.semantic_projector_epochs,
+    )
     print("Running per-patch CLIP text similarity probes...")
-    patch_semantic_results = _run_patch_semantic_probes(artifacts)
+    patch_semantic_results = _run_patch_semantic_probes(
+        artifacts,
+        projector_epochs=args.semantic_projector_epochs,
+    )
     _plot_probe_overview(
         artifacts=artifacts,
         component_results=component_results,
@@ -672,6 +917,11 @@ def main() -> None:
         disentanglement_result=disentanglement_result,
     )
     _plot_component_heatmaps(artifacts, output_path=output_dir / "ijepa_component_heatmaps.png")
+    if dino_results is not None:
+        _plot_dino_alignment(
+            dino_results,
+            output_path=output_dir / "ijepa_dino_semantic_alignment.png",
+        )
     if semantic_results is not None:
         _plot_semantic_alignment(
             semantic_results,
@@ -689,6 +939,8 @@ def main() -> None:
         checkpoint_path=checkpoint_path,
         component_results=component_results,
         disentanglement_result=disentanglement_result,
+        semantic_results=semantic_results,
+        dino_results=dino_results,
         output_path=output_dir / "ijepa_probing_summary.txt",
     )
     print("=" * 70)

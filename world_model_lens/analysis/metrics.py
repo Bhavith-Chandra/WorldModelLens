@@ -1,6 +1,7 @@
 """Latent space metrics for world model evaluation."""
 
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field
 from typing import Any
 
 import torch
@@ -34,6 +35,9 @@ class DisentanglementEvaluationResult:
 
     summary_scores: dict[str, float]
     """Aggregated scores across all components."""
+
+    component_errors: dict[str, str] = field(default_factory=dict)
+    """Errors encountered while evaluating individual components."""
 
 
 class LatentMetrics:
@@ -257,10 +261,83 @@ class DisentanglementEvaluationSuite:
         """
         self.analyzer = DisentanglementAnalyzer(n_bins=n_bins)
 
+    @staticmethod
+    def _extract_latents(cache: Any, component: str) -> torch.Tensor:
+        """Load and flatten latents for one component."""
+        latents = cache[component]
+
+        if not isinstance(latents, torch.Tensor):
+            raise TypeError(f"Expected tensor activations for {component}, got {type(latents)!r}")
+
+        if latents.dim() == 3:
+            latents = latents.flatten(1)
+        elif latents.dim() == 1:
+            latents = latents.unsqueeze(0)
+        elif latents.dim() != 2:
+            raise ValueError(
+                f"Expected 1D, 2D, or 3D activations for {component}, got shape {tuple(latents.shape)}"
+            )
+
+        if latents.shape[0] < 2:
+            raise ValueError(f"Need at least two samples for disentanglement on {component}")
+
+        return latents.detach().float()
+
+    @staticmethod
+    def _resolve_component_factors(
+        factors: Mapping[str, Any],
+        component: str,
+    ) -> tuple[list[str], torch.Tensor]:
+        """Resolve shared or per-component factor mappings into a stacked tensor."""
+        if not factors:
+            raise ValueError("factors must be a non-empty mapping")
+
+        first_value = next(iter(factors.values()))
+        if isinstance(first_value, Mapping):
+            if component not in factors:
+                raise KeyError(f"Missing factors for component '{component}'")
+            component_factors = factors[component]
+        else:
+            component_factors = factors
+
+        if not component_factors:
+            raise ValueError(f"No factors provided for component '{component}'")
+
+        factor_names = list(component_factors.keys())
+        factor_tensors = []
+        for factor_name in factor_names:
+            values = component_factors[factor_name]
+            if not isinstance(values, torch.Tensor):
+                values = torch.as_tensor(values)
+            if values.dim() != 1:
+                raise ValueError(
+                    f"Factor '{factor_name}' for component '{component}' must be 1D, got shape {tuple(values.shape)}"
+                )
+            factor_tensors.append(values.detach().float())
+
+        stacked = torch.stack(factor_tensors, dim=1)
+        if stacked.shape[0] < 2:
+            raise ValueError(f"Need at least two factor samples for component '{component}'")
+        return factor_names, stacked
+
+    @staticmethod
+    def _metric_fields(metrics: list[str]) -> list[str]:
+        fields: list[str] = []
+        for metric in metrics:
+            if metric == "MIG":
+                fields.append("MIG")
+            elif metric == "DCI":
+                fields.extend(
+                    ["DCI_disentanglement", "DCI_completeness", "DCI_informativeness"]
+                )
+            elif metric == "SAP":
+                fields.append("SAP")
+        return fields
+
     def evaluate_components(
         self,
         cache: Any,  # ActivationCache
-        factors: dict[str, torch.Tensor],
+        factors: Mapping[str, Any],
         components: list[str],
         metrics: list[str] | None = None,
     ) -> DisentanglementEvaluationResult:
@@ -268,7 +345,7 @@ class DisentanglementEvaluationSuite:
 
         Args:
             cache: ActivationCache containing model activations.
-            factors: Dictionary mapping factor names to factor value tensors [T].
+            factors: Shared factor mapping or per-component factor mappings.
             components: List of component names to evaluate (e.g., ['z_posterior', 'context_encoder', 'predictor']).
             metrics: Metrics to compute ('MIG', 'DCI', 'SAP'). Defaults to all.
 
@@ -277,65 +354,62 @@ class DisentanglementEvaluationSuite:
         """
         if metrics is None:
             metrics = ["MIG", "DCI", "SAP"]
+        else:
+            metrics = [metric.upper() for metric in metrics]
+
+        unknown_metrics = [metric for metric in metrics if metric not in {"MIG", "DCI", "SAP"}]
+        if unknown_metrics:
+            raise ValueError(f"Unknown disentanglement metrics requested: {unknown_metrics}")
 
         component_results = {}
+        component_errors = {}
 
         for component in components:
             try:
-                # Get latent representations for this component
-                latents = cache[component]  # This should work for any component in cache
+                latents = self._extract_latents(cache, component)
+                _, component_factors = self._resolve_component_factors(factors, component)
+                if latents.shape[0] != component_factors.shape[0]:
+                    raise ValueError(
+                        f"Sample mismatch for {component}: latents have {latents.shape[0]} rows, "
+                        f"factors have {component_factors.shape[0]}"
+                    )
 
-                # Ensure latents are properly shaped [T, d_latent]
-                if latents.dim() == 3:
-                    latents = latents.flatten(1)
-                elif latents.dim() == 1:
-                    latents = latents.unsqueeze(0)
+                metric_result: dict[str, float] = {}
+                if "MIG" in metrics:
+                    metric_result["MIG"] = float(self.analyzer.mig(latents, component_factors))
+                if "DCI" in metrics:
+                    disentanglement, completeness, informativeness = self.analyzer.dci(
+                        latents, component_factors
+                    )
+                    metric_result["DCI_disentanglement"] = float(disentanglement)
+                    metric_result["DCI_completeness"] = float(completeness)
+                    metric_result["DCI_informativeness"] = float(informativeness)
+                if "SAP" in metrics:
+                    metric_result["SAP"] = float(self.analyzer.sap(latents, component_factors))
 
-                # Compute disentanglement scores
-                result = self.analyzer.analyze(latents, torch.stack(list(factors.values()), dim=1))
+                component_results[component] = metric_result
 
-                component_results[component] = {
-                    "MIG": result.mig_score if result.mig_score is not None else 0.0,
-                    "DCI_disentanglement": result.dci_disentanglement
-                    if result.dci_disentanglement is not None
-                    else 0.0,
-                    "DCI_completeness": result.dci_completeness
-                    if result.dci_completeness is not None
-                    else 0.0,
-                    "DCI_informativeness": result.dci_informativeness
-                    if result.dci_informativeness is not None
-                    else 0.0,
-                    "SAP": result.sap_score if result.sap_score is not None else 0.0,
-                }
+            except (KeyError, TypeError, ValueError, RuntimeError) as exc:
+                component_errors[component] = str(exc)
 
-            except (KeyError, ValueError, RuntimeError):
-                # Component not found or computation failed
-                component_results[component] = {
-                    "MIG": 0.0,
-                    "DCI_disentanglement": 0.0,
-                    "DCI_completeness": 0.0,
-                    "DCI_informativeness": 0.0,
-                    "SAP": 0.0,
-                }
+        if not component_results:
+            raise RuntimeError(
+                "Disentanglement evaluation failed for every requested component: "
+                + "; ".join(f"{name}: {msg}" for name, msg in component_errors.items())
+            )
 
-        # Compute summary scores (average across components)
         summary_scores = {}
-        if component_results:
-            for metric in [
-                "MIG",
-                "DCI_disentanglement",
-                "DCI_completeness",
-                "DCI_informativeness",
-                "SAP",
-            ]:
-                valid_scores = [
-                    res[metric] for res in component_results.values() if res[metric] != 0.0
-                ]
-                summary_scores[metric] = (
-                    sum(valid_scores) / len(valid_scores) if valid_scores else 0.0
-                )
+        for metric_name in self._metric_fields(metrics):
+            values = [
+                result[metric_name]
+                for result in component_results.values()
+                if metric_name in result
+            ]
+            if values:
+                summary_scores[metric_name] = float(sum(values) / len(values))
 
         return DisentanglementEvaluationResult(
             component_results=component_results,
             summary_scores=summary_scores,
+            component_errors=component_errors,
         )

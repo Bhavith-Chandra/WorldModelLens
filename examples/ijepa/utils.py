@@ -298,6 +298,20 @@ def build_patch_factors(patch_ids: list[int], grid_size: int) -> dict[str, torch
     return {name: torch.from_numpy(values.astype(np.float32)) for name, values in labels.items()}
 
 
+def build_disentanglement_factors(
+    patch_ids: list[int],
+    grid_size: int,
+    image_size: int = 224,
+) -> dict[str, torch.Tensor]:
+    """Build a richer factor set for disentanglement analysis."""
+    labels = PatchLabelBuilder(
+        patch_ids=patch_ids,
+        grid_size=grid_size,
+        image_size=image_size,
+    ).build_geometric()
+    return {name: torch.from_numpy(values.astype(np.float32)) for name, values in labels.items()}
+
+
 def build_patch_heatmap(
     patch_ids: list[int],
     values: np.ndarray | torch.Tensor,
