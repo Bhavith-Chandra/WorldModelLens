@@ -135,7 +135,7 @@ class VisionTransformer(nn.Module):
         # Proper initialization for positional embeddings
         nn.init.trunc_normal_(self.pos_embed, std=0.02)
 
-    def forward(self, x, patch_ids=None):
+    def forward(self, x, patch_ids=None, return_all_layers=False):
         """Processes (subset of) patches. Positional embeddings are sliced BEFORE addition."""
         # 1. Patchify
         x = self.patch_embed(x)
@@ -167,15 +167,24 @@ class VisionTransformer(nn.Module):
 
         # 3. Add positional embeddings to only the visible patches
         x = x + pos_embed
-        return self.forward_blocks(x)
+        return self.forward_blocks(x, return_all_layers=return_all_layers)
 
-    def forward_blocks(self, x, mask=None):
+    def forward_blocks(self, x, mask=None, return_all_layers=False):
         """Processes latent embeddings through the transformer blocks."""
         x = self.pos_drop(x)
         x = self.hook_resid_pre(x)
+        
+        layer_states = []
         for block in self.blocks:
             x = block(x, mask=mask)
+            if return_all_layers:
+                layer_states.append(x)
+                
         x = self.norm(x)
+        
+        if return_all_layers:
+            return x, layer_states
+            
         return x
 
 
@@ -429,6 +438,28 @@ class IJEPAAdapter(BaseModelAdapter, HookedRootModule):
 
         context_latents = self.context_encoder(obs, patch_ids=self.last_context_ids)
         return context_latents, context_latents
+
+    def multi_layer_rollout(self, obs: torch.Tensor) -> Tuple[torch.Tensor, List[torch.Tensor]]:
+        """
+        Research-grade multi-layer rollout for the context encoder.
+        Returns the final latent representation and a list of intermediate representations
+        from each transformer block.
+        """
+        if obs.dim() == 3:
+            obs = obs.unsqueeze(0)
+
+        # Generate/refresh masks if needed
+        if self.last_context_ids is None:
+            grid_size = self.context_encoder.patch_embed.grid_size
+            num_patches = self.context_encoder.patch_embed.n_patches
+            ctx, targets = self._get_structured_masks(num_patches, grid_size)
+            self.last_context_ids = ctx
+            self.last_target_ids = sorted([i for block in targets for i in block])
+
+        final_latents, layer_states = self.context_encoder(
+            obs, patch_ids=self.last_context_ids, return_all_layers=True
+        )
+        return final_latents, layer_states
 
     def target_encode(self, obs: torch.Tensor) -> torch.Tensor:
         """Expose target encoder as a separate hook point for ground-truth comparison."""

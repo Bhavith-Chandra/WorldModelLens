@@ -168,10 +168,18 @@ class ForwardRunner:
         
         with ctx_mgr:
             # 1. Context Encoder
-            context_latents, _ = adapter.encode(obs_batch)
-            if manager is not None:
-                ctx = HookContext(timestep=0, component="forward", trajectory_so_far=[])
-                manager.apply_and_cache("encoder.out", 0, context_latents, ctx, cache, names_filter)
+            if hasattr(adapter, "multi_layer_rollout"):
+                context_latents, layer_states = adapter.multi_layer_rollout(obs_batch)
+                if manager is not None:
+                    ctx = HookContext(timestep=0, component="forward", trajectory_so_far=[])
+                    for i, layer_state in enumerate(layer_states):
+                        manager.apply_and_cache(f"encoder.layer_{i}", 0, layer_state, ctx, cache, names_filter)
+                    manager.apply_and_cache("encoder.out", 0, context_latents, ctx, cache, names_filter)
+            else:
+                context_latents, _ = adapter.encode(obs_batch)
+                if manager is not None:
+                    ctx = HookContext(timestep=0, component="forward", trajectory_so_far=[])
+                    manager.apply_and_cache("encoder.out", 0, context_latents, ctx, cache, names_filter)
             
             # 2. Target Encoder (EMA)
             target_reps = adapter.target_encode(obs_batch)

@@ -82,6 +82,46 @@ def test_ijepa_patch_axis_flow_and_keys():
         assert val.dim() == 3, f"Activation {key} should be [B, N, D]"
         assert val.shape[0] == 1, "Batch size should match input"
 
+def test_ijepa_context_encoder_multi_layer_rollout():
+    """Verify the Context Encoder multi-layer rollout works properly."""
+    config = WorldModelConfig(
+        backend="ijepa",
+        world_model_family=WorldModelFamily.JEPA,
+        patch_size=16,
+        d_embed=192,
+        n_layers=6 # 6 blocks in Context Encoder
+    )
+    
+    adapter = IJEPAAdapter(config)
+    wm = HookedWorldModel(adapter=adapter, config=config)
+    runner = ForwardRunner(wm)
+    
+    obs_seq = torch.randn(1, 3, 224, 224)
+    actions = torch.zeros(1, 1)
+    cache = ActivationCache()
+    
+    # Run forward pass (which should cache encoder layers)
+    runner.run_forward(obs_seq, actions, cache, names_filter=None)
+    
+    # Verify encoder.out is still cached
+    assert "encoder.out" in cache.component_names, "Should cache context encoder output"
+    
+    # Verify encoder.layer_{i} is cached
+    for i in range(config.n_layers):
+        key = f"encoder.layer_{i}"
+        assert key in cache.component_names, f"Should cache intermediate encoder layer: {key}"
+        
+        # Verify shape
+        val = cache[key, 0]
+        assert val.dim() == 3, f"Activation {key} should be [B, N, D]"
+        assert val.shape[0] == 1, "Batch size should match input"
+        
+    # Also verify the direct API on the adapter
+    final_latents, layer_states = adapter.multi_layer_rollout(obs_seq)
+    assert len(layer_states) == config.n_layers, "Direct API should return all layers"
+    assert layer_states[-1].shape == final_latents.shape, "Final layer state shape should match final latents shape"
+
+
 if __name__ == "__main__":
     # Allow running directly
     pytest.main([__file__])
