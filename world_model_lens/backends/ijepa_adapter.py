@@ -323,7 +323,11 @@ class IJEPAAdapter(BaseModelAdapter, HookedRootModule):
         # Last known masks for inference/interpretability
         self.last_context_ids = None
         self.last_target_ids: List[int] = []
-        
+
+        # Required so HookedWorldModel's hasattr check triggers hook sync
+        self.hooks = None
+        self.current_timestep = 0
+
         self.setup_hooks()
 
     @property

@@ -141,7 +141,7 @@ class IJEPAFaithfulnessEvaluator:
         return results
 
 def calculate_auc(values):
-    return np.trapezoid(values) / len(values) if values else 0
+    return np.trapz(values) / len(values) if values else 0
 
 def compute_monotonicity(values):
     if len(values) < 2: return 0
