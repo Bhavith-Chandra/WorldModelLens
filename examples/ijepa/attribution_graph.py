@@ -27,6 +27,17 @@ class AttributionRun:
     top_heads: List[int]
     metrics: Dict[str, float]
 
+
+@dataclass(frozen=True)
+class ImageSet:
+    """Images used for an attribution consistency run."""
+
+    images: List[Image.Image]
+    label: str
+    mode: str
+    paths: List[Path]
+
+
 def get_patch_rect(patch_id, grid_size=14, img_size=224):
     """Calculates [x, y, w, h] for a patch ID."""
     row = patch_id // grid_size
@@ -100,7 +111,7 @@ def plot_image_overlay(ax, img, target_id, top_context_ids, grid_size=14):
 
 
 def plot_image_gallery(ax, imgs, runs: Sequence[AttributionRun], grid_size=14):
-    """Show every same-class image used for the consistency check."""
+    """Show every image used for the consistency check."""
     if not imgs or not runs:
         ax.axis("off")
         return
@@ -171,37 +182,11 @@ def plot_image_gallery(ax, imgs, runs: Sequence[AttributionRun], grid_size=14):
     ax.set_ylim(n_rows * thumb_size, 0)
     ax.axis("off")
 
-def load_same_class_images(
-    raw_img: Image.Image,
-    n_images: int = 5,
-    image_dir: str | None = None,
-) -> List[Image.Image]:
-    """Load same-class images from disk, with deterministic fallback variants."""
-    search_dir = Path(image_dir) if image_dir else Path(__file__).resolve().parent
-    local_paths = []
-    if search_dir.exists():
-        patterns = ("dog*.jpg", "dog*.jpeg", "dog*.png", "Dog*.jpg", "Dog*.jpeg", "Dog*.png")
-        for pattern in patterns:
-            local_paths.extend(search_dir.glob(pattern))
-        local_paths = sorted({path.resolve() for path in local_paths})[:n_images]
-
-    if len(local_paths) >= n_images:
-        loaded = []
-        for path in local_paths:
-            with Image.open(path) as img:
-                loaded.append(img.convert("RGB"))
-        print(f"Loaded {len(loaded)} same-class images from {search_dir}")
-        return loaded
-
-    # Fallback: create deterministic same-image variants when we do not have
-    # enough local same-class images available on disk.
+def _make_augmented_variants(raw_img: Image.Image, n_images: int) -> List[Image.Image]:
+    """Create deterministic variants for explicit intra-image robustness checks."""
     if n_images <= 1:
         return [raw_img]
 
-    print(
-        f"Found {len(local_paths)} local dog image(s) in {search_dir}; "
-        "using deterministic same-image variants as fallback."
-    )
     width, height = raw_img.size
     variants = []
     crop_specs = [
@@ -219,11 +204,100 @@ def load_same_class_images(
         top = min(int(height * y_frac), height - crop_h)
         cropped = raw_img.crop((left, top, left + crop_w, top + crop_h)).resize(raw_img.size)
 
-        # Small deterministic channel-neutral brightness shift.
         arr = np.asarray(cropped).astype(np.float32)
         arr = np.clip(arr * (0.94 + 0.03 * (i % 5)), 0, 255).astype(np.uint8)
         variants.append(Image.fromarray(arr))
     return variants
+
+
+def _load_images_from_paths(paths: Sequence[Path]) -> List[Image.Image]:
+    loaded = []
+    for path in paths:
+        with Image.open(path) as img:
+            loaded.append(img.convert("RGB"))
+    return loaded
+
+
+def load_consistency_image_set(
+    raw_img: Image.Image,
+    n_images: int = 5,
+    image_dir: str | None = None,
+    image_paths: Sequence[str | Path] | None = None,
+    dataset_label: str = "image set",
+    allowed_extensions: Sequence[str] = (".jpg", ".jpeg", ".png", ".bmp", ".webp"),
+    allow_augmented_fallback: bool = False,
+) -> ImageSet:
+    """Load independent images for cross-image consistency.
+
+    The caller is responsible for pointing this at images from the class being
+    evaluated. Augmented variants are opt-in and are labeled separately because
+    they measure intra-image robustness, not cross-image consistency.
+    """
+    if n_images < 1:
+        raise ValueError("n_images must be at least 1.")
+
+    allowed = {ext.lower() for ext in allowed_extensions}
+    local_paths: List[Path] = []
+
+    if image_paths is not None:
+        local_paths = [Path(path).resolve() for path in image_paths]
+    elif image_dir is not None:
+        search_dir = Path(image_dir)
+        if not search_dir.exists():
+            raise FileNotFoundError(f"Image directory does not exist: {search_dir}")
+        local_paths = sorted(
+            path.resolve()
+            for path in search_dir.iterdir()
+            if path.is_file() and path.suffix.lower() in allowed
+        )
+    else:
+        search_dir = Path(__file__).resolve().parent
+        local_paths = sorted(
+            path.resolve()
+            for path in search_dir.iterdir()
+            if path.is_file()
+            and path.suffix.lower() in allowed
+            and path.suffix.lower() in {".jpg", ".jpeg"}
+        )
+
+    if len(local_paths) >= n_images:
+        selected = local_paths[:n_images]
+        loaded = _load_images_from_paths(selected)
+        print(f"Loaded {len(loaded)} independent images for {dataset_label} from disk.")
+        return ImageSet(images=loaded, label=dataset_label, mode="cross_image", paths=selected)
+
+    if allow_augmented_fallback:
+        print(
+            f"Found {len(local_paths)} independent image(s) for {dataset_label}; "
+            "using explicit augmented fallback for intra-image robustness."
+        )
+        return ImageSet(
+            images=_make_augmented_variants(raw_img, n_images),
+            label=f"{dataset_label} augmented variants",
+            mode="augmented_fallback",
+            paths=[],
+        )
+
+    location = "provided paths" if image_paths is not None else image_dir or Path(__file__).resolve().parent
+    raise ValueError(
+        f"Need {n_images} independent images for cross-image consistency, "
+        f"but found {len(local_paths)} in {location}. "
+        "Pass image_dir/image_paths with same-class images or set "
+        "allow_augmented_fallback=True to run an intra-image robustness check."
+    )
+
+
+def load_same_class_images(
+    raw_img: Image.Image,
+    n_images: int = 5,
+    image_dir: str | None = None,
+) -> List[Image.Image]:
+    """Backward-compatible wrapper that returns only independent images."""
+    return load_consistency_image_set(
+        raw_img,
+        n_images=n_images,
+        image_dir=image_dir,
+    ).images
 
 
 def attribution_metrics(attributions: np.ndarray, k: int) -> Dict[str, float]:
@@ -240,6 +314,47 @@ def attribution_metrics(attributions: np.ndarray, k: int) -> Dict[str, float]:
         "entropy": entropy,
         "effective_patches": float(np.exp(-(probs * np.log(probs + 1e-12)).sum())),
     }
+
+
+def _summarize_values(values: Sequence[float]) -> Dict[str, float]:
+    vals = np.asarray(values, dtype=np.float64)
+    if vals.size == 0:
+        return {"mean": 0.0, "std": 0.0}
+    return {
+        "mean": float(vals.mean()),
+        "std": float(vals.std(ddof=1)) if vals.size > 1 else 0.0,
+    }
+
+
+def _pairwise_jaccard(sets: Sequence[set[int]]) -> List[float]:
+    overlaps = []
+    for i in range(len(sets)):
+        for j in range(i + 1, len(sets)):
+            union = sets[i] | sets[j]
+            overlaps.append(len(sets[i] & sets[j]) / len(union) if union else 0.0)
+    return overlaps
+
+
+def _rank_correlation(a: np.ndarray, b: np.ndarray) -> float:
+    """Spearman-style rank correlation without requiring scipy."""
+    if a.size < 2 or b.size < 2 or a.size != b.size:
+        return 0.0
+    a_rank = np.argsort(np.argsort(a.astype(np.float64)))
+    b_rank = np.argsort(np.argsort(b.astype(np.float64)))
+    a_centered = a_rank - a_rank.mean()
+    b_centered = b_rank - b_rank.mean()
+    denom = np.linalg.norm(a_centered) * np.linalg.norm(b_centered)
+    if denom == 0:
+        return 0.0
+    return float(np.dot(a_centered, b_centered) / denom)
+
+
+def _pairwise_rank_correlations(score_vectors: Sequence[np.ndarray]) -> List[float]:
+    corrs = []
+    for i in range(len(score_vectors)):
+        for j in range(i + 1, len(score_vectors)):
+            corrs.append(_rank_correlation(score_vectors[i], score_vectors[j]))
+    return corrs
 
 
 def extract_predictor_attributions(
@@ -267,7 +382,7 @@ def extract_predictor_attributions(
     sorted_patch_indices = np.argsort(mean_attributions)[::-1][:k]
     top_context_ids = [int(context_ids[i]) for i in sorted_patch_indices]
 
-    head_scores = target_to_context_by_head[:, sorted_patch_indices].sum(axis=1)
+    head_scores = target_to_context_by_head.sum(axis=1)
     top_head_ids = np.argsort(head_scores)[::-1][:top_heads].tolist()
     metrics = attribution_metrics(mean_attributions, k)
     metrics["head_concentration"] = float(head_scores.max() / (head_scores.sum() + 1e-12))
@@ -278,20 +393,17 @@ def summarize_attribution_runs(runs: Sequence[AttributionRun], k: int) -> Dict[s
     metric_names = sorted({name for run in runs for name in run.metrics})
     summary = {}
     for name in metric_names:
-        vals = np.array([run.metrics[name] for run in runs], dtype=np.float64)
-        summary[name] = {"mean": float(vals.mean()), "std": float(vals.std(ddof=1)) if len(vals) > 1 else 0.0}
+        summary[name] = _summarize_values([run.metrics[name] for run in runs])
 
     if len(runs) > 1:
         top_sets = [set(run.top_context_ids[:k]) for run in runs]
-        overlaps = []
-        for i in range(len(top_sets)):
-            for j in range(i + 1, len(top_sets)):
-                union = top_sets[i] | top_sets[j]
-                overlaps.append(len(top_sets[i] & top_sets[j]) / len(union) if union else 0.0)
-        summary["top_patch_jaccard"] = {
-            "mean": float(np.mean(overlaps)),
-            "std": float(np.std(overlaps, ddof=1)) if len(overlaps) > 1 else 0.0,
-        }
+        summary["top_patch_jaccard"] = _summarize_values(_pairwise_jaccard(top_sets))
+
+        head_sets = [set(run.top_heads) for run in runs]
+        summary["top_head_jaccard"] = _summarize_values(_pairwise_jaccard(head_sets))
+        summary["head_rank_spearman"] = _summarize_values(
+            _pairwise_rank_correlations([run.head_scores for run in runs])
+        )
 
     head_counts: Dict[int, int] = {}
     for run in runs:
@@ -306,10 +418,17 @@ def summarize_attribution_runs(runs: Sequence[AttributionRun], k: int) -> Dict[s
 
 
 def print_consistency_report(
-    grouped_runs: Dict[Tuple[int, int], List[AttributionRun]], k: int, n_images: int
+    grouped_runs: Dict[Tuple[int, int], List[AttributionRun]],
+    k: int,
+    n_images: int,
+    dataset_label: str = "image set",
+    mode: str = "cross_image",
 ) -> None:
-    print(f"\nCross-image attribution consistency ({n_images} same-class views)")
-    print("Target | Layer | top-patch Jaccard | dominant heads | metrics mean +/- std")
+    title = "Cross-image attribution consistency"
+    if mode == "augmented_fallback":
+        title = "Intra-image augmented robustness"
+    print(f"\n{title} ({n_images} views, {dataset_label})")
+    print("Target | Layer | top-patch Jaccard | top-head Jaccard | head-rank rho | dominant heads | metrics mean +/- std")
     for (target_id, layer_idx), runs in sorted(grouped_runs.items()):
         summary = summarize_attribution_runs(runs, k)
         head_counts: Dict[int, int] = {}
@@ -320,12 +439,21 @@ def print_consistency_report(
         metrics = ", ".join(
             f"{name}={vals['mean']:.3f}+/-{vals['std']:.3f}"
             for name, vals in summary.items()
-            if name not in {"top_patch_jaccard", "dominant_head_frequency"}
+            if name not in {
+                "top_patch_jaccard",
+                "top_head_jaccard",
+                "head_rank_spearman",
+                "dominant_head_frequency",
+            }
         )
         patch_consistency = summary.get("top_patch_jaccard", {"mean": 1.0, "std": 0.0})
+        head_consistency = summary.get("top_head_jaccard", {"mean": 1.0, "std": 0.0})
+        head_rank = summary.get("head_rank_spearman", {"mean": 1.0, "std": 0.0})
         print(
             f"{target_id:>6} | {layer_idx:>5} | "
-            f"{patch_consistency['mean']:.3f}+/-{patch_consistency['std']:.3f} | {heads} | {metrics}"
+            f"{patch_consistency['mean']:.3f}+/-{patch_consistency['std']:.3f} | "
+            f"{head_consistency['mean']:.3f}+/-{head_consistency['std']:.3f} | "
+            f"{head_rank['mean']:.3f}+/-{head_rank['std']:.3f} | {heads} | {metrics}"
         )
 
 
@@ -335,6 +463,9 @@ def visualize_research_ijepa(
     layout_mode="importance",
     n_consistency_images=5,
     same_class_image_dir: str | None = None,
+    same_class_image_paths: Sequence[str | Path] | None = None,
+    dataset_label: str = "same-class set",
+    allow_augmented_fallback: bool = False,
 ):
     script_dir = Path(__file__).resolve().parent
     raw_img = get_sample_image()
@@ -369,11 +500,15 @@ def visualize_research_ijepa(
     num_layers = len(layers_to_compare)
     fig = plt.figure(figsize=(20, 6 * num_targets * num_layers))
     
-    same_class_images = load_same_class_images(
+    image_set = load_consistency_image_set(
         raw_img,
         n_images=n_consistency_images,
         image_dir=same_class_image_dir or str(script_dir),
+        image_paths=same_class_image_paths,
+        dataset_label=dataset_label,
+        allow_augmented_fallback=allow_augmented_fallback,
     )
+    same_class_images = image_set.images
     same_class_tensors = [preprocess_image(img) for img in same_class_images]
     grouped_runs: Dict[Tuple[int, int], List[AttributionRun]] = {}
 
@@ -432,10 +567,16 @@ def visualize_research_ijepa(
             ax_graph.axis('off')
             
             plot_image_gallery(ax_img, same_class_images, runs)
-            ax_img.set_title(f"Grounding Across {len(runs)} Dog Images | {name} Layer")
+            ax_img.set_title(f"Grounding Across {len(runs)} {image_set.label} Views | {name} Layer")
 
     plt.tight_layout()
-    print_consistency_report(grouped_runs, k, len(same_class_images))
+    print_consistency_report(
+        grouped_runs,
+        k,
+        len(same_class_images),
+        dataset_label=image_set.label,
+        mode=image_set.mode,
+    )
     if os.environ.get("SAVE_PLOT"):
         plt.savefig("attribution_comparison.png")
         print("Comparison plot saved to attribution_comparison.png")
