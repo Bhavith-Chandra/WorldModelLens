@@ -457,8 +457,8 @@ class IJEPAAdapter(BaseModelAdapter, HookedRootModule):
     def target_encode(self, obs: torch.Tensor) -> torch.Tensor:
         """Expose target encoder as a separate hook point for ground-truth comparison."""
         # Sync hooks to submodules
-        self.target_encoder.hooks = self.hooks
-        self.target_encoder.current_timestep = self.current_timestep
+        self.target_encoder.hooks = getattr(self, "hooks", None)
+        self.target_encoder.current_timestep = getattr(self, "current_timestep", 0)
         
         with torch.no_grad():
             return self.target_encoder(obs)
@@ -488,8 +488,8 @@ class IJEPAAdapter(BaseModelAdapter, HookedRootModule):
         if self.last_target_ids is None:
             self.last_target_ids = list(range(10))
 
-        self.predictor.hooks = self.hooks
-        self.predictor.current_timestep = self.current_timestep
+        self.predictor.hooks = getattr(self, "hooks", None)
+        self.predictor.current_timestep = getattr(self, "current_timestep", 0)
         pred_latents = self.predictor(h, self.last_context_ids, self.last_target_ids)
         return pred_latents
 
