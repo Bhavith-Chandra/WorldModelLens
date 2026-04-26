@@ -321,7 +321,7 @@ def _summarize_values(values: Sequence[float]) -> Dict[str, float]:
     if vals.size == 0:
         return {"mean": 0.0, "std": 0.0}
     return {
-        "mean": float(vals.mean()),
+        "mean": float(vals.mean()), 
         "std": float(vals.std(ddof=1)) if vals.size > 1 else 0.0,
     }
 
