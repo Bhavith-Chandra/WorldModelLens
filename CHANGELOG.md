@@ -2,6 +2,14 @@
 
 All notable changes to World Model Lens will be documented here.
 
+## [Unreleased]
+
+### Changed
+- Wired `ModelHub.load()` to dispatch DreamerV3 checkpoints through `DreamerV3Adapter.from_checkpoint()` when a compatible local or downloaded checkpoint path is available.
+
+### Notes
+- Registered `dreamerv3-*` hub entries remain `coming_soon` until a known-good public PyTorch checkpoint source is validated for this adapter.
+
 ## [0.1.0] - 2024
 
 ### Added

@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 import warnings
 import torch
+from world_model_lens.backends.dreamerv3 import DreamerV3Adapter
 from world_model_lens.backends.iris import IRISAdapter
 from world_model_lens.core.config import WorldModelConfig
 
@@ -383,6 +384,11 @@ class ModelHub:
 
         if model_info.backend == "iris":
             return cls._load_iris(local_path, device=device)
+        if model_info.backend == "dreamerv3":
+            adapter = DreamerV3Adapter.from_checkpoint(local_path)
+            adapter = adapter.to(torch.device(device))
+            adapter.eval()
+            return adapter
 
         raise NotImplementedError(
             f"Adapter loading for backend '{model_info.backend}' is not yet wired up.\n"

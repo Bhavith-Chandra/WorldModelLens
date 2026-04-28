@@ -27,6 +27,8 @@ import pytest
 import torch
 import warnings
 
+from world_model_lens.backends.base_adapter import AdapterConfig
+from world_model_lens.backends.dreamerv3 import DreamerV3Adapter
 from world_model_lens.backends.iris import IRISAdapter
 from world_model_lens.hub.model_hub import ModelHub, ModelInfo
 from world_model_lens.hub.weights_downloader import WeightsDownloader
@@ -101,6 +103,23 @@ def fake_checkpoint_file(tmp_path: Path) -> Path:
     }
     path = tmp_path / "fake_iris.pt"
     torch.save(ckpt, path)
+    return path
+
+
+@pytest.fixture()
+def fake_dreamerv3_checkpoint(tmp_path: Path) -> Path:
+    """A compatible DreamerV3Adapter state dict saved to disk for hub dispatch tests."""
+    cfg = AdapterConfig(
+        d_h=32,
+        d_obs=8,
+        d_action=4,
+        n_cat=4,
+        n_cls=4,
+        encoder_type="mlp",
+    )
+    adapter = DreamerV3Adapter(cfg)
+    path = tmp_path / "fake_dreamerv3.pt"
+    torch.save(adapter.state_dict(), path)
     return path
 
 
@@ -468,6 +487,32 @@ def test_load_iris_returns_eval_mode(tmp_path: Path):
         adapter = ModelHub._load_iris(str(path), device="cpu")
 
     assert not adapter.training, "Adapter should be in eval mode"
+
+
+def test_load_dreamerv3_branch_returns_adapter(fake_dreamerv3_checkpoint: Path):
+    """ModelHub.load() should dispatch to DreamerV3Adapter for dreamerv3 backends."""
+    model_info = ModelInfo(
+        name="dreamerv3-local-test",
+        backend="dreamerv3",
+        environment="TestEnv",
+        description="test checkpoint",
+        coming_soon=False,
+        hf_repo_id="dummy/repo",
+        hf_filename="dummy.pt",
+    )
+
+    with patch.object(ModelHub, "info", return_value=model_info):
+        with patch.object(ModelHub, "pull", return_value=str(fake_dreamerv3_checkpoint)):
+            adapter = ModelHub.load("dreamerv3-local-test", device="cpu")
+
+    assert isinstance(adapter, DreamerV3Adapter)
+    assert not adapter.training
+
+
+def test_load_dreamerv3_registered_entry_still_raises_coming_soon():
+    """Registered dreamerv3-* keys should still fail until a real HF source is wired up."""
+    with pytest.raises(NotImplementedError, match="not yet available"):
+        ModelHub.load("dreamerv3-atari-pong", device="cpu")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
