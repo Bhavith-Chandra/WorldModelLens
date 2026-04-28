@@ -223,10 +223,11 @@ class BeliefAnalyzer:
         obs_seq: Optional[torch.Tensor] = None,
         decoder: Optional[Any] = None,
     ) -> SurpriseResult:
-        """Compute surprise (KL divergence) timeline.
+        """Compute surprise (KL divergence or cosine distance) timeline.
 
         Works with ANY world model - computes KL between posterior and prior
-        latents when both are available.
+        latents when both are available, or cosine distance for I-JEPA predictor
+        vs target encoder outputs.
 
         Args:
             cache: ActivationCache from run_with_cache.
@@ -236,41 +237,58 @@ class BeliefAnalyzer:
         Returns:
             SurpriseResult with timeline and statistics.
         """
-        kl_vals = []
-        peaks = []
         timesteps = sorted(cache.timesteps)
 
-        for t in timesteps:
-            try:
-                z_post = cache["z_posterior", t]
-                z_prior = cache["z_prior", t]
+        if (
+            "predictor_out" in cache.component_names
+            and "target_encoder_out" in cache.component_names
+        ):
+            # I-JEPA cosine distance
+            dist_vals = []
+            for t in timesteps:
+                try:
+                    pred_out = cache["predictor_out", t]
+                    targ_out = cache["target_encoder_out", t]
+                    # Assume pred_out and targ_out are [num_patches, dim]
+                    similarities = torch.nn.functional.cosine_similarity(pred_out, targ_out, dim=-1)
+                    distances = 1 - similarities
+                    dist_vals.append(distances.mean().item())
+                except (KeyError, TypeError):
+                    dist_vals.append(0.0)
+            kl_tensor = torch.tensor(dist_vals)
+        else:
+            # Original KL divergence
+            kl_vals = []
+            for t in timesteps:
+                try:
+                    z_post = cache["z_posterior", t]
+                    z_prior = cache["z_prior", t]
 
-                if z_post.shape != z_prior.shape or z_post.dim() <= 1:
+                    if z_post.shape != z_prior.shape or z_post.dim() <= 1:
+                        kl_vals.append(0.0)
+                        continue
+
+                    p = z_post.clamp(min=1e-8)
+                    q = z_prior.clamp(min=1e-8)
+                    p = p / p.sum(dim=-1, keepdim=True)
+                    q = q / q.sum(dim=-1, keepdim=True)
+                    kl = (p * (p.log() - q.log())).sum().item()
+                    kl_vals.append(kl)
+                except (KeyError, TypeError):
                     kl_vals.append(0.0)
-                    continue
+            kl_tensor = torch.tensor(kl_vals)
 
-                p = z_post.clamp(min=1e-8)
-                q = z_prior.clamp(min=1e-8)
-                p = p / p.sum(dim=-1, keepdim=True)
-                q = q / q.sum(dim=-1, keepdim=True)
-                kl = (p * (p.log() - q.log())).sum().item()
-                kl_vals.append(kl)
-            except (KeyError, TypeError):
-                kl_vals.append(0.0)
-
-        kl_tensor = torch.tensor(kl_vals)
-
-        mean_surprise = kl_tensor.mean().item() if len(kl_vals) > 0 else 0.0
-        max_idx = kl_tensor.argmax().item() if len(kl_vals) > 0 else 0
-        threshold = mean_surprise + kl_tensor.std().item() if len(kl_vals) > 0 else 0
-        peaks = [(i, v) for i, v in enumerate(kl_vals) if v > threshold]
+        mean_surprise = kl_tensor.mean().item() if len(kl_tensor) > 0 else 0.0
+        max_idx = int(kl_tensor.argmax().item()) if len(kl_tensor) > 0 else 0
+        threshold = mean_surprise + kl_tensor.std().item() if len(kl_tensor) > 0 else 0
+        peaks = [(i, v.item()) for i, v in enumerate(kl_tensor) if v > threshold]
 
         return SurpriseResult(
             kl_sequence=kl_tensor,
             peaks=peaks,
             mean_surprise=mean_surprise,
             max_surprise_timestep=max_idx,
-            max_surprise_value=kl_vals[max_idx] if kl_vals else 0.0,
+            max_surprise_value=kl_tensor[max_idx].item() if len(kl_tensor) > 0 else 0.0,
         )
 
     def concept_search(

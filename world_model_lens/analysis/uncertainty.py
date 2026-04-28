@@ -24,13 +24,15 @@ if TYPE_CHECKING:
 class UncertaintyResult:
     """Result of uncertainty analysis."""
 
-    mean_prediction: torch.Tensor | None = None
-    variance: torch.Tensor | None = None
-    entropy: torch.Tensor | None = None
-    confidence: torch.Tensor | None = None
-    epistemic_uncertainty: float | None = None
-    aleatoric_uncertainty: float | None = None
-    total_uncertainty: float | None = None
+    mean_prediction: Optional[torch.Tensor] = None
+    variance: Optional[torch.Tensor] = None
+    entropy: Optional[torch.Tensor] = None
+    confidence: Optional[torch.Tensor] = None
+    epistemic_uncertainty: Optional[float] = None
+    aleatoric_uncertainty: Optional[float] = None
+    total_uncertainty: Optional[float] = None
+    ood_scores: Optional[torch.Tensor] = None
+    is_ood_fitted: bool = False
 
 
 class UncertaintyQuantifier:
@@ -41,6 +43,7 @@ class UncertaintyQuantifier:
     - Dropout-based (Bayesian)
     - Confidence-based
     - Disagreement-based
+    - Latent-based OOD detection (fit distribution on predictor latents)
     """
 
     def __init__(self, wm: Optional["HookedWorldModel"] = None):
@@ -233,6 +236,39 @@ class UncertaintyQuantifier:
             disagreement = predictions.var(dim=0).mean()
 
         return disagreement.item()
+
+    def fit_latent_distribution(self, latents: list[torch.Tensor]) -> None:
+        """Fit distribution on in-distribution predictor latents.
+
+        Args:
+            latents: List of latent tensors, each [num_patches, dim]
+        """
+        # Aggregate per latent: mean over patches
+        aggregated = [latent.mean(dim=0) for latent in latents]  # list of [dim]
+        latents_tensor = torch.stack(aggregated)  # [n_samples, dim]
+        self.id_mean = latents_tensor.mean(dim=0)
+        self.id_cov = torch.cov(latents_tensor.T) + 1e-6 * torch.eye(
+            latents_tensor.shape[1]
+        )  # regularization
+        self.is_ood_fitted = True
+
+    def score_ood_latents(self, latents: list[torch.Tensor]) -> torch.Tensor:
+        """Score OOD latents using Mahalanobis distance.
+
+        Args:
+            latents: List of latent tensors
+
+        Returns:
+            Scores tensor [n_samples]
+        """
+        if not self.is_ood_fitted:
+            raise ValueError("Distribution not fitted")
+        aggregated = [latent.mean(dim=0) for latent in latents]
+        latents_tensor = torch.stack(aggregated)  # [n_samples, dim]
+        diff = latents_tensor - self.id_mean
+        inv_cov = torch.inverse(self.id_cov)
+        mahal = torch.einsum("bi,ij,bj->b", diff, inv_cov, diff)
+        return mahal.sqrt()
 
     def run_full_analysis(
         self,
