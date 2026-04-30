@@ -1,15 +1,42 @@
 from __future__ import annotations
+
 import argparse
 from pathlib import Path
-import matplotlib.pyplot as plt
-import matplotlib.patches as patches
+
 import matplotlib.colors as mcolors
+import matplotlib.patches as patches
+import matplotlib.pyplot as plt
 import numpy as np
 import torch
+
+from utils import (
+    OUTPUT_DIR,
+    PatchLabelBuilder,
+    build_disentanglement_factors,
+    build_patch_heatmap,
+    build_patch_labels,
+    collect_ijepa_artifacts,
+    get_patch_rect,
+    get_sample_image,
+    load_ijepa_world_model,
+    preprocess_image,
+)
+from world_model_lens import LatentProber
+from world_model_lens.analysis.metrics import DisentanglementEvaluationSuite
+
+try:
+    from world_model_lens.probing.semantic_probes import IJEPASemanticAligner, SemanticProber
+
+    _SEMANTIC_AVAILABLE = True
+except Exception:
+    IJEPASemanticAligner = None
+    SemanticProber = None
+    _SEMANTIC_AVAILABLE = False
+
 _COMPONENT_COLORS = {
-    "z_posterior": "#4C72B0",
-    "target_encoding": "#55A868",
-    "predictor_targets": "#DD8452",
+    "encoder.out": "#4C72B0",
+    "target_encoder_out": "#55A868",
+    "predictor_out": "#DD8452",
 }
 _CONCEPT_LABELS = {
     "top_half": "Top Half",
@@ -30,30 +57,13 @@ _CLIP_CONCEPT_PROMPTS = {
         "image patches from the edges of a picture",
     ),
 }
-from world_model_lens import LatentProber
-from world_model_lens.analysis.metrics import DisentanglementEvaluationSuite
-try:
-    from world_model_lens.probing.semantic_probes import IJEPASemanticAligner, SemanticProber
-    _SEMANTIC_AVAILABLE = True
-except Exception:
-    IJEPASemanticAligner = None
-    SemanticProber = None
-    _SEMANTIC_AVAILABLE = False
-from utils import (
-    OUTPUT_DIR,
-    PatchLabelBuilder,
-    build_disentanglement_factors,
-    build_patch_heatmap,
-    build_patch_labels,
-    collect_ijepa_artifacts,
-    get_patch_rect,
-    get_sample_image,
-    load_ijepa_world_model,
-    preprocess_image,
-)
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Checkpoint-first I-JEPA probing example.")
-    parser.add_argument("--checkpoint", type=str, default=None, help="Path to the I-JEPA checkpoint.")
+    parser.add_argument(
+        "--checkpoint", type=str, default=None, help="Path to the I-JEPA checkpoint."
+    )
     parser.add_argument("--image", type=str, default=None, help="Path to a specific image file.")
     parser.add_argument(
         "--imagenet-root",
@@ -61,9 +71,13 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Optional ImageNet root. The first image found under val/train will be used.",
     )
-    parser.add_argument("--device", type=str, default=None, help="Optional torch device, e.g. cpu or cuda.")
     parser.add_argument(
-        "--n-images", type=int, default=1,
+        "--device", type=str, default=None, help="Optional torch device, e.g. cpu or cuda."
+    )
+    parser.add_argument(
+        "--n-images",
+        type=int,
+        default=1,
         help="Number of images for multi-image aggregate probing (default 1 = single-image mode).",
     )
     parser.add_argument(
@@ -86,22 +100,26 @@ def parse_args() -> argparse.Namespace:
         help="Training epochs for DINO/CLIP latent projectors used by semantic probes.",
     )
     return parser.parse_args()
+
+
 _GEOMETRIC_PROBE_SPECS = [
-    ("top_half",         "logistic"),
-    ("left_half",        "logistic"),
-    ("center_band",      "logistic"),
+    ("top_half", "logistic"),
+    ("left_half", "logistic"),
+    ("center_band", "logistic"),
     ("patch_index_norm", "ridge"),
-    ("row_norm",         "ridge"),
-    ("col_norm",         "ridge"),
-    ("quadrant",         "logistic"),
-    ("is_boundary",      "logistic"),
+    ("row_norm", "ridge"),
+    ("col_norm", "ridge"),
+    ("quadrant", "logistic"),
+    ("is_boundary", "logistic"),
 ]
 _CONTENT_PROBE_SPECS = [
-    ("brightness",       "ridge"),
-    ("edge_density",     "ridge"),
+    ("brightness", "ridge"),
+    ("edge_density", "ridge"),
     ("texture_variance", "ridge"),
-    ("saturation",       "ridge"),
+    ("saturation", "ridge"),
 ]
+
+
 def _run_probes(
     prober: LatentProber,
     component_name: str,
@@ -123,6 +141,8 @@ def _run_probes(
             probe_type=probe_type,
         )
     return results
+
+
 def _probe_component(
     prober: LatentProber,
     component_name: str,
@@ -133,9 +153,12 @@ def _probe_component(
 ) -> tuple[dict[str, object], dict[str, np.ndarray]]:
     builder = PatchLabelBuilder(patch_ids, grid_size)
     labels = builder.build_all(raw_image) if raw_image is not None else builder.build_geometric()
-    results = _run_probes(prober, component_name, activations, labels,
-                          include_content=(raw_image is not None))
+    results = _run_probes(
+        prober, component_name, activations, labels, include_content=(raw_image is not None)
+    )
     return results, labels
+
+
 def _plot_probe_overview(
     artifacts,
     component_results,
@@ -146,30 +169,51 @@ def _plot_probe_overview(
     component_names = list(component_results.keys())
     n_comps = len(component_names)
     fig = plt.figure(figsize=(24, 15))
-    outer = fig.add_gridspec(1, 2, width_ratios=[0.85, 2.2], wspace=0.08,
-                             left=0.03, right=0.97, top=0.91, bottom=0.05)
+    outer = fig.add_gridspec(
+        1, 2, width_ratios=[0.85, 2.2], wspace=0.08, left=0.03, right=0.97, top=0.91, bottom=0.05
+    )
     ax_img = fig.add_subplot(outer[0])
     n_right_rows = 3 if disentanglement_result is not None else 2
     height_ratios = [1.1, 1.1, 0.6] if disentanglement_result is not None else [1.1, 1.1]
-    inner = outer[1].subgridspec(n_right_rows, 2, height_ratios=height_ratios, hspace=0.55, wspace=0.38)
+    inner = outer[1].subgridspec(
+        n_right_rows, 2, height_ratios=height_ratios, hspace=0.55, wspace=0.38
+    )
     ax_bar = fig.add_subplot(inner[0, 0])
-    ax_r2  = fig.add_subplot(inner[0, 1])
+    ax_r2 = fig.add_subplot(inner[0, 1])
     pca_inner = inner[1, :].subgridspec(1, n_comps, wspace=0.38)
     pca_axes = [fig.add_subplot(pca_inner[i]) for i in range(n_comps)]
     # --- Image panel ---
     ax_img.imshow(artifacts.raw_image.resize((224, 224)))
     for patch_id in artifacts.context_ids:
         x, y, w, h = get_patch_rect(patch_id, artifacts.grid_size, image_size=224)
-        ax_img.add_patch(patches.Rectangle((x, y), w, h, linewidth=0.8, edgecolor="#4CAF50", facecolor="#4CAF50", alpha=0.15))
+        ax_img.add_patch(
+            patches.Rectangle(
+                (x, y), w, h, linewidth=0.8, edgecolor="#4CAF50", facecolor="#4CAF50", alpha=0.15
+            )
+        )
     for patch_id in artifacts.target_ids:
         x, y, w, h = get_patch_rect(patch_id, artifacts.grid_size, image_size=224)
-        ax_img.add_patch(patches.Rectangle((x, y), w, h, linewidth=1.5, edgecolor="#F44336", facecolor="#F44336", alpha=0.20))
+        ax_img.add_patch(
+            patches.Rectangle(
+                (x, y), w, h, linewidth=1.5, edgecolor="#F44336", facecolor="#F44336", alpha=0.20
+            )
+        )
     ax_img.legend(
         handles=[
-            patches.Patch(facecolor="#4CAF50", alpha=0.6, label=f"Context ({len(artifacts.context_ids)} patches)"),
-            patches.Patch(facecolor="#F44336", alpha=0.6, label=f"Target ({len(artifacts.target_ids)} patches)"),
+            patches.Patch(
+                facecolor="#4CAF50",
+                alpha=0.6,
+                label=f"Context ({len(artifacts.context_ids)} patches)",
+            ),
+            patches.Patch(
+                facecolor="#F44336",
+                alpha=0.6,
+                label=f"Target ({len(artifacts.target_ids)} patches)",
+            ),
         ],
-        loc="lower right", fontsize=9, framealpha=0.9,
+        loc="lower right",
+        fontsize=9,
+        framealpha=0.9,
     )
     ax_img.set_title("Context / Target Patch Layout", fontweight="bold", pad=8)
     ax_img.axis("off")
@@ -183,23 +227,38 @@ def _plot_probe_overview(
         errs = [component_results[cname][c].cv_std for c in concepts]
         offset = (i - n_comps / 2 + 0.5) * bar_w
         bars = ax_bar.bar(
-            x + offset, accs, bar_w,
-            label=cname.replace("_", " "), color=color, alpha=0.88,
-            edgecolor="white", linewidth=0.6,
-            yerr=errs, capsize=3, error_kw={"elinewidth": 1.2, "ecolor": "#444", "capthick": 1.2},
+            x + offset,
+            accs,
+            bar_w,
+            label=cname.replace("_", " "),
+            color=color,
+            alpha=0.88,
+            edgecolor="white",
+            linewidth=0.6,
+            yerr=errs,
+            capsize=3,
+            error_kw={"elinewidth": 1.2, "ecolor": "#444", "capthick": 1.2},
         )
         for bar, acc, err in zip(bars, accs, errs, strict=False):
             ax_bar.text(
                 bar.get_x() + bar.get_width() / 2,
                 acc + err + 0.025,
-                f"{acc:.2f}", ha="center", va="bottom", fontsize=7, fontweight="bold",
+                f"{acc:.2f}",
+                ha="center",
+                va="bottom",
+                fontsize=7,
+                fontweight="bold",
             )
-    ax_bar.axhline(0.5, color="#888", linestyle="--", linewidth=1.0, alpha=0.7, label="chance (0.5)")
+    ax_bar.axhline(
+        0.5, color="#888", linestyle="--", linewidth=1.0, alpha=0.7, label="chance (0.5)"
+    )
     ax_bar.set_xticks(x)
     ax_bar.set_xticklabels([_CONCEPT_LABELS[c] for c in concepts], fontsize=9)
     ax_bar.set_ylim(0.0, 1.32)
     ax_bar.set_ylabel("Accuracy +/- CV std", fontsize=9)
-    ax_bar.set_title("Linear Probe Accuracy\n(spatial concept decoding)", fontweight="bold", pad=6, fontsize=9)
+    ax_bar.set_title(
+        "Linear Probe Accuracy\n(spatial concept decoding)", fontweight="bold", pad=6, fontsize=9
+    )
     ax_bar.legend(fontsize=8, loc="lower right", framealpha=0.9)
     ax_bar.grid(axis="y", alpha=0.3, linewidth=0.7)
     ax_bar.spines[["top", "right"]].set_visible(False)
@@ -213,20 +272,43 @@ def _plot_probe_overview(
             r2_colors.append(_COMPONENT_COLORS.get(cname, "gray") if r2 >= 0 else "#d62728")
             r2_labels.append(cname.replace("_", "\n"))
     if r2_vals:
-        bars_r2 = ax_r2.bar(np.arange(len(r2_vals)), r2_vals, color=r2_colors, alpha=0.88, edgecolor="white", linewidth=0.6, width=0.5)
+        bars_r2 = ax_r2.bar(
+            np.arange(len(r2_vals)),
+            r2_vals,
+            color=r2_colors,
+            alpha=0.88,
+            edgecolor="white",
+            linewidth=0.6,
+            width=0.5,
+        )
         for bar, val in zip(bars_r2, r2_vals, strict=False):
             ypos = val + 0.03 if val >= 0 else val - 0.07
             va = "bottom" if val >= 0 else "top"
-            ax_r2.text(bar.get_x() + bar.get_width() / 2, ypos, f"{val:.3f}", ha="center", va=va, fontsize=8, fontweight="bold")
+            ax_r2.text(
+                bar.get_x() + bar.get_width() / 2,
+                ypos,
+                f"{val:.3f}",
+                ha="center",
+                va=va,
+                fontsize=8,
+                fontweight="bold",
+            )
         ax_r2.axhline(0.0, color="#555", linewidth=1.0)
         ax_r2.axhline(1.0, color="#888", linestyle="--", linewidth=0.8, alpha=0.5)
-        ax_r2.text(len(r2_vals) - 0.45, 1.02, "R^2 = 1 (perfect)", fontsize=7, color="#888", va="bottom")
+        ax_r2.text(
+            len(r2_vals) - 0.45, 1.02, "R^2 = 1 (perfect)", fontsize=7, color="#888", va="bottom"
+        )
         ax_r2.set_xticks(np.arange(len(r2_labels)))
         ax_r2.set_xticklabels(r2_labels, fontsize=9)
         ymin = min(min(r2_vals) - 0.2, -0.5)
         ax_r2.set_ylim(ymin, 1.18)
         ax_r2.set_ylabel("R^2", fontsize=9)
-        ax_r2.set_title("Ridge Probe R^2: patch_index_norm\n(can absolute patch position be decoded?)", fontweight="bold", pad=6, fontsize=9)
+        ax_r2.set_title(
+            "Ridge Probe R^2: patch_index_norm\n(can absolute patch position be decoded?)",
+            fontweight="bold",
+            pad=6,
+            fontsize=9,
+        )
         ax_r2.grid(axis="y", alpha=0.3, linewidth=0.7)
         ax_r2.spines[["top", "right"]].set_visible(False)
     # --- PCA for all components, shared colorbar on last axis ---
@@ -237,10 +319,24 @@ def _plot_probe_overview(
         acts_c = activations - activations.mean(0)
         _, _, vt = torch.pca_lowrank(acts_c, q=2)
         proj = (acts_c @ vt).detach().cpu().numpy()
-        ax_pca.scatter(proj[:, 0], proj[:, 1], c=labels_arr, cmap="coolwarm", norm=norm,
-                       s=28, alpha=0.85, edgecolors="white", linewidths=0.25)
+        ax_pca.scatter(
+            proj[:, 0],
+            proj[:, 1],
+            c=labels_arr,
+            cmap="coolwarm",
+            norm=norm,
+            s=28,
+            alpha=0.85,
+            edgecolors="white",
+            linewidths=0.25,
+        )
         acc = component_results[cname]["top_half"].accuracy
-        ax_pca.set_title(f"{cname.replace('_', ' ').title()}\ntop_half probe={acc:.2f}", fontweight="bold", pad=4, fontsize=8)
+        ax_pca.set_title(
+            f"{cname.replace('_', ' ').title()}\ntop_half probe={acc:.2f}",
+            fontweight="bold",
+            pad=4,
+            fontsize=8,
+        )
         ax_pca.set_xlabel("PC 1", fontsize=8)
         ax_pca.set_ylabel("PC 2", fontsize=8)
         ax_pca.tick_params(labelsize=7)
@@ -255,16 +351,27 @@ def _plot_probe_overview(
         ax_dci = fig.add_subplot(inner[2, 0])
         ax_mig = fig.add_subplot(inner[2, 1])
         scores = disentanglement_result.summary_scores
-        dci_keys   = [m for m in scores if m.startswith("DCI")]
+        dci_keys = [m for m in scores if m.startswith("DCI")]
         sparse_keys = [m for m in scores if not m.startswith("DCI")]
         dci_vals = [scores[m] for m in dci_keys]
         dci_labels = [m.replace("DCI_", "") for m in dci_keys]
-        dci_colors = [_COMPONENT_COLORS["target_encoding"] if v >= 0.5 else _COMPONENT_COLORS["predictor_targets"] for v in dci_vals]
+        dci_colors = [
+            _COMPONENT_COLORS["target_encoder_out"]
+            if v >= 0.5
+            else _COMPONENT_COLORS["predictor_out"]
+            for v in dci_vals
+        ]
         bdci = ax_dci.barh(dci_labels, dci_vals, color=dci_colors, alpha=0.85, edgecolor="white")
         ax_dci.axvline(0.5, color="#888", linestyle="--", linewidth=1.0, alpha=0.7)
         ax_dci.set_xlim(0, 1.2)
         for bar, val in zip(bdci, dci_vals, strict=False):
-            ax_dci.text(val + 0.02, bar.get_y() + bar.get_height() / 2, f"{val:.3f}", va="center", fontsize=8)
+            ax_dci.text(
+                val + 0.02,
+                bar.get_y() + bar.get_height() / 2,
+                f"{val:.3f}",
+                va="center",
+                fontsize=8,
+            )
         ax_dci.set_title("DCI Metrics (0–1 scale)", fontweight="bold", pad=4, fontsize=9)
         ax_dci.grid(axis="x", alpha=0.3, linewidth=0.7)
         ax_dci.spines[["top", "right"]].set_visible(False)
@@ -274,7 +381,13 @@ def _plot_probe_overview(
         bsp = ax_mig.barh(sparse_keys, sparse_vals, color="#9e9e9e", alpha=0.85, edgecolor="white")
         ax_mig.set_xlim(0, max(sparse_max, 0.02))
         for bar, val in zip(bsp, sparse_vals, strict=False):
-            ax_mig.text(val + sparse_max * 0.04, bar.get_y() + bar.get_height() / 2, f"{val:.4f}", va="center", fontsize=8)
+            ax_mig.text(
+                val + sparse_max * 0.04,
+                bar.get_y() + bar.get_height() / 2,
+                f"{val:.4f}",
+                va="center",
+                fontsize=8,
+            )
         ax_mig.set_title("MIG / SAP (near-zero = entangled)", fontweight="bold", pad=4, fontsize=9)
         ax_mig.grid(axis="x", alpha=0.3, linewidth=0.7)
         ax_mig.spines[["top", "right"]].set_visible(False)
@@ -282,8 +395,14 @@ def _plot_probe_overview(
     fig.suptitle("I-JEPA Patch Probing Overview", fontsize=14, fontweight="bold")
     fig.savefig(output_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
+
+
 def _plot_component_heatmaps(artifacts, output_path: Path) -> None:
-    component_names = [name for name in ["z_posterior", "predictor_targets", "target_encoding"] if name in artifacts.components]
+    component_names = [
+        name
+        for name in ["encoder.out", "predictor_out", "target_encoder_out"]
+        if name in artifacts.components
+    ]
     n = max(1, len(component_names))
     fig, axes = plt.subplots(1, n, figsize=(5 * n + 0.5, 5.5))
     axes = np.atleast_1d(axes)
@@ -317,12 +436,23 @@ def _plot_component_heatmaps(artifacts, output_path: Path) -> None:
         erange = emax - emin
         pct = erange / emax * 100 if emax > 0 else 0
         title = component_name.replace("_", " ").title()
-        ax.set_title(f"{title}\nDelta={erange:.4f}  ({pct:.2f}% of max)", fontweight="bold", pad=6, fontsize=9)
+        ax.set_title(
+            f"{title}\nDelta={erange:.4f}  ({pct:.2f}% of max)",
+            fontweight="bold",
+            pad=6,
+            fontsize=9,
+        )
         ax.axis("off")
-    fig.suptitle("Per-Patch Activation Energy\n(L2 norm of latent feature vector per patch)", fontsize=12, fontweight="bold")
+    fig.suptitle(
+        "Per-Patch Activation Energy\n(L2 norm of latent feature vector per patch)",
+        fontsize=12,
+        fontweight="bold",
+    )
     fig.tight_layout()
     fig.savefig(output_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
+
+
 def _write_summary(
     artifacts,
     metadata,
@@ -393,6 +523,8 @@ def _write_summary(
             )
         lines.append("")
     output_path.write_text("\n".join(lines), encoding="utf-8")
+
+
 def _plot_probe_heatmap(
     component_results: dict,
     output_path: Path,
@@ -421,7 +553,9 @@ def _plot_probe_heatmap(
                 has_r2 = True
             else:
                 matrix[i, j] = r.accuracy
-    fig, ax = plt.subplots(figsize=(max(6, len(component_names) * 2.2), max(5, len(all_concepts) * 0.55)))
+    fig, ax = plt.subplots(
+        figsize=(max(6, len(component_names) * 2.2), max(5, len(all_concepts) * 0.55))
+    )
     # Use symmetric scale for R² (which can be negative); accuracy stays 0-1
     if has_r2 and np.nanmin(matrix) < 0:
         vmin, vmax = -1, 1
@@ -438,8 +572,15 @@ def _plot_probe_heatmap(
         for j in range(len(component_names)):
             v = matrix[i, j]
             if not np.isnan(v):
-                ax.text(j, i, f"{v:.2f}", ha="center", va="center",
-                        fontsize=7, color="black" if 0.25 < v < 0.85 else "white")
+                ax.text(
+                    j,
+                    i,
+                    f"{v:.2f}",
+                    ha="center",
+                    va="center",
+                    fontsize=7,
+                    color="black" if 0.25 < v < 0.85 else "white",
+                )
     cbar = fig.colorbar(im, ax=ax, fraction=0.03, pad=0.02)
     cbar.set_label("Accuracy (clf) / R^2 (reg)", fontsize=8)
     suffix = f"  [{n_images} image{'s' if n_images > 1 else ''}]"
@@ -448,6 +589,8 @@ def _plot_probe_heatmap(
     fig.tight_layout()
     fig.savefig(output_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
+
+
 def _run_dino_semantic_probes(
     artifacts,
     dino_model: str = "dino_vitb16",
@@ -479,9 +622,7 @@ def _run_dino_semantic_probes(
             results[component_name] = result
             print(
                 f"  [dino-semantic] {component_name}: R^2={result.r2_projection:.3f}  "
-                + "  ".join(
-                    f"{c}={v:.3f}" for c, v in result.concept_feature_alignments.items()
-                )
+                + "  ".join(f"{c}={v:.3f}" for c, v in result.concept_feature_alignments.items())
             )
         except Exception as exc:
             print(f"  [dino-semantic] {component_name} failed: {exc}")
@@ -578,7 +719,9 @@ def _plot_dino_alignment(dino_results: dict, output_path: Path) -> None:
     ax2.grid(axis="y", alpha=0.3, linewidth=0.7)
     ax2.spines[["top", "right"]].set_visible(False)
 
-    fig.suptitle("DINO Semantic Alignment Probes on I-JEPA Patch Latents", fontsize=13, fontweight="bold")
+    fig.suptitle(
+        "DINO Semantic Alignment Probes on I-JEPA Patch Latents", fontsize=13, fontweight="bold"
+    )
     fig.subplots_adjust(left=0.07, right=0.97, top=0.82, bottom=0.13, wspace=0.35)
     fig.savefig(output_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
@@ -613,11 +756,15 @@ def _run_semantic_probes(artifacts, projector_epochs: int = 300) -> dict | None:
                 projector_epochs=projector_epochs,
             )
             results[component_name] = result
-            print(f"  [semantic] {component_name}: R²={result.r2_projection:.3f}  "
-                  + "  ".join(f"{c}={v:.3f}" for c, v in result.concept_text_alignments.items()))
+            print(
+                f"  [semantic] {component_name}: R²={result.r2_projection:.3f}  "
+                + "  ".join(f"{c}={v:.3f}" for c, v in result.concept_text_alignments.items())
+            )
         except Exception as exc:
             print(f"  [semantic] {component_name} failed: {exc}")
     return results or None
+
+
 def _plot_semantic_alignment(semantic_results: dict, output_path: Path) -> None:
     """Two-panel plot: concept-text cosine similarity + ridge projection R^2."""
     component_names = list(semantic_results.keys())
@@ -634,14 +781,26 @@ def _plot_semantic_alignment(semantic_results: dict, output_path: Path) -> None:
         offset = (i - n_comps / 2 + 0.5) * bar_w
         color = _COMPONENT_COLORS.get(cname, f"C{i}")
         bars = ax.bar(
-            x + offset, vals, bar_w,
-            label=cname.replace("_", " "), color=color, alpha=0.88, edgecolor="white",
+            x + offset,
+            vals,
+            bar_w,
+            label=cname.replace("_", " "),
+            color=color,
+            alpha=0.88,
+            edgecolor="white",
         )
         for bar, val in zip(bars, vals, strict=False):
             yoff = 0.012 if val >= 0 else -0.03
             va = "bottom" if val >= 0 else "top"
-            ax.text(bar.get_x() + bar.get_width() / 2, val + yoff,
-                    f"{val:.2f}", ha="center", va=va, fontsize=8, fontweight="bold")
+            ax.text(
+                bar.get_x() + bar.get_width() / 2,
+                val + yoff,
+                f"{val:.2f}",
+                ha="center",
+                va=va,
+                fontsize=8,
+                fontweight="bold",
+            )
     ax.axhline(0, color="#555", linewidth=1.0)
     ax.set_xticks(x)
     ax.set_xticklabels([_CONCEPT_LABELS[c] for c in concepts], fontsize=9)
@@ -649,7 +808,8 @@ def _plot_semantic_alignment(semantic_results: dict, output_path: Path) -> None:
     ax.set_title(
         "CLIP Text - I-JEPA Concept Direction Alignment\n"
         "(positive = semantically aligned with CLIP's spatial understanding)",
-        fontweight="bold", fontsize=9,
+        fontweight="bold",
+        fontsize=9,
     )
     ax.legend(fontsize=8, framealpha=0.9, loc="lower right")
     ax.grid(axis="y", alpha=0.3, linewidth=0.7)
@@ -658,13 +818,21 @@ def _plot_semantic_alignment(semantic_results: dict, output_path: Path) -> None:
     ax2 = axes[1]
     r2_vals = [semantic_results[c].r2_projection for c in component_names]
     colors = [_COMPONENT_COLORS.get(c, "gray") for c in component_names]
-    bars2 = ax2.bar(range(len(component_names)), r2_vals, color=colors, alpha=0.88,
-                    edgecolor="white", width=0.5)
+    bars2 = ax2.bar(
+        range(len(component_names)), r2_vals, color=colors, alpha=0.88, edgecolor="white", width=0.5
+    )
     for bar, val in zip(bars2, r2_vals, strict=False):
         yoff = 0.02 if val >= 0 else -0.05
         va = "bottom" if val >= 0 else "top"
-        ax2.text(bar.get_x() + bar.get_width() / 2, val + yoff, f"{val:.3f}",
-                 ha="center", va=va, fontsize=9, fontweight="bold")
+        ax2.text(
+            bar.get_x() + bar.get_width() / 2,
+            val + yoff,
+            f"{val:.3f}",
+            ha="center",
+            va=va,
+            fontsize=9,
+            fontweight="bold",
+        )
     ax2.set_xticks(range(len(component_names)))
     ax2.set_xticklabels([c.replace("_", "\n") for c in component_names], fontsize=9)
     r2_min = min(r2_vals) if r2_vals else 0
@@ -675,15 +843,20 @@ def _plot_semantic_alignment(semantic_results: dict, output_path: Path) -> None:
     ax2.set_ylabel("R^2  (I-JEPA latents -> CLIP image patch embeddings)", fontsize=9)
     ax2.set_title(
         "CrossModal Projector R^2\n(how much of CLIP patch structure lives in I-JEPA?)",
-        fontweight="bold", fontsize=9,
+        fontweight="bold",
+        fontsize=9,
     )
     ax2.axhline(1.0, color="#888", linestyle="--", linewidth=0.8, alpha=0.5)
     ax2.grid(axis="y", alpha=0.3, linewidth=0.7)
     ax2.spines[["top", "right"]].set_visible(False)
-    fig.suptitle("CLIP Semantic Alignment Probes on I-JEPA Patch Latents", fontsize=13, fontweight="bold")
+    fig.suptitle(
+        "CLIP Semantic Alignment Probes on I-JEPA Patch Latents", fontsize=13, fontweight="bold"
+    )
     fig.subplots_adjust(left=0.07, right=0.97, top=0.82, bottom=0.13, wspace=0.35)
     fig.savefig(output_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
+
+
 def _run_patch_semantic_probes(artifacts, projector_epochs: int = 300) -> dict | None:
     """Run per-patch CLIP text similarity probes across all I-JEPA components."""
     if not _SEMANTIC_AVAILABLE:
@@ -691,6 +864,7 @@ def _run_patch_semantic_probes(artifacts, projector_epochs: int = 300) -> dict |
         return None
     try:
         from world_model_lens.probing.semantic_probes import CLIPTextProber
+
         prober = CLIPTextProber()
     except Exception as exc:
         print(f"  [patch-semantic] Could not initialise CLIPTextProber: {exc}")
@@ -717,10 +891,13 @@ def _run_patch_semantic_probes(artifacts, projector_epochs: int = 300) -> dict |
         except Exception as exc:
             print(f"  [patch-semantic] {component_name} failed: {exc}")
     return results or None
-def _plot_patch_semantic_alignment(patch_semantic_results: dict, artifacts, output_path: Path) -> None:
+
+
+def _plot_patch_semantic_alignment(
+    patch_semantic_results: dict, artifacts, output_path: Path
+) -> None:
     """Grid of per-patch CLIP text similarity heatmaps."""
     import matplotlib.gridspec as gridspec
-    import matplotlib.cm as cm
 
     component_names = list(patch_semantic_results.keys())
     concepts = list(_CLIP_CONCEPT_PROMPTS.keys())
@@ -735,14 +912,19 @@ def _plot_patch_semantic_alignment(patch_semantic_results: dict, artifacts, outp
 
     # grid: data cells + one narrow colorbar column
     gs = gridspec.GridSpec(
-        n_rows, n_cols + 1,
+        n_rows,
+        n_cols + 1,
         figure=fig,
         width_ratios=[1.0] * n_cols + [cbar_w / (cell_w * n_cols)],
-        left=0.03, right=0.97, top=0.92, bottom=0.03,
-        hspace=0.30, wspace=0.08,
+        left=0.03,
+        right=0.97,
+        top=0.92,
+        bottom=0.03,
+        hspace=0.30,
+        wspace=0.08,
     )
     axes = np.array([[fig.add_subplot(gs[i, j]) for j in range(n_cols)] for i in range(n_rows)])
-    cax  = fig.add_subplot(gs[:, n_cols])
+    cax = fig.add_subplot(gs[:, n_cols])
 
     max_abs = 0.0
     for result in patch_semantic_results.values():
@@ -802,9 +984,15 @@ def _plot_patch_semantic_alignment(patch_semantic_results: dict, artifacts, outp
         cax.set_ylabel("cosine(pos text) - cosine(neg text)", fontsize=8, labelpad=6)
         cax.tick_params(labelsize=7)
 
-    fig.suptitle("Per-Patch CLIP Text Similarity Maps\n(grey = patches not in component)", fontsize=13, fontweight="bold")
+    fig.suptitle(
+        "Per-Patch CLIP Text Similarity Maps\n(grey = patches not in component)",
+        fontsize=13,
+        fontweight="bold",
+    )
     fig.savefig(output_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
+
+
 def main() -> None:
     args = parse_args()
     output_dir = Path(args.output_dir)
@@ -850,8 +1038,7 @@ def main() -> None:
         or name.startswith("predictor.")
     )
     disentanglement_cache = {
-        name: manual_components[name].activations
-        for name in disentanglement_component_names
+        name: manual_components[name].activations for name in disentanglement_component_names
     }
     disentanglement_factors = {
         name: build_disentanglement_factors(
@@ -879,11 +1066,15 @@ def main() -> None:
     if args.n_images > 1:
         print(f"Building multi-image dataset ({args.n_images} images)...")
         from dataset import build_multi_image_dataset
+
         dataset = build_multi_image_dataset(wm, adapter, n_synthetic=args.n_images)
         multi_results: dict = {}
         for comp_name, comp_data in dataset.components.items():
             multi_results[comp_name] = _run_probes(
-                prober, comp_name, comp_data.activations, comp_data.labels,
+                prober,
+                comp_name,
+                comp_data.activations,
+                comp_data.labels,
                 include_content=True,
             )
         _plot_probe_heatmap(
@@ -949,5 +1140,7 @@ def main() -> None:
     print(f"components: {list(artifacts.components.keys())}")
     print(f"outputs: {output_dir}")
     print("=" * 70)
+
+
 if __name__ == "__main__":
     main()

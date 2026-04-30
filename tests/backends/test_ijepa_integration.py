@@ -27,16 +27,20 @@ def test_ijepa_final_integration():
         assert isinstance(wm.adapter, IJEPAAdapter)
         print("HookedWorldModel.from_checkpoint('ijepa') PASSED")
         
-        # 4. Test run_with_cache including target_encoding
+        # 4. Test run_with_cache including JEPA-native cache keys
         obs = torch.randn(2, 3, 224, 224)
         traj, cache = wm.run_with_cache(obs)
         
         # Verify cache points
-        assert "target_encoding" in cache.component_names
-        print("target_encoding hook in ActivationCache PASSED")
+        assert "target_encoder.out" in cache.component_names
+        assert "target_encoder_out" in cache.component_names
+        assert "predictor.final" in cache.component_names
+        assert "predictor_out" in cache.component_names
+        print("JEPA cache hooks in ActivationCache PASSED")
         
-        target_repr = cache["target_encoding", 0]
-        assert target_repr.shape == (196, 128) # Grid size 14x14 = 196
+        target_repr = cache["target_encoder.out", 0]
+        assert target_repr.shape == (2, 196, 128) # Batch of 2, grid size 14x14 = 196
+        assert traj.length > 0
         
     finally:
         if os.path.exists(checkpoint_path):

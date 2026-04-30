@@ -114,16 +114,24 @@ def test_ijepa_hooked_integration():
     obs = torch.randn(1, 3, 224, 224)
     traj, cache = wm.run_with_cache(obs)
     
-    # Verify target encoding appeared in cache (if implemented in HookedWorldModel)
-    if "target_encoding" in cache.component_names:
-        assert cache["target_encoding", 0].shape == (196, 128)
-    
-    assert "z_posterior" in cache.component_names
-    latent = cache["z_posterior", 0]
-    # Ranges explained:
-    # Context samples 80-90% of 196 patches (157-176)
-    # Then subtracts 4 target blocks of ~15-20% area (29-39 each)
-    # Minimum valid context (50% retention) is around 78.
-    # We assert a safe range for the masking strategy.
-    assert 50 < latent.shape[0] < 185
-    assert latent.shape[1] == 128
+    assert "encoder.out" in cache.component_names
+    assert "target_encoder.out" in cache.component_names
+    assert "target_encoder_out" in cache.component_names
+    assert "predictor.final" in cache.component_names
+    assert "predictor_out" in cache.component_names
+
+    context_latent = cache["encoder.out", 0]
+    target_latent = cache["target_encoder_out", 0]
+    predictor_latent = cache["predictor_out", 0]
+
+    if context_latent.dim() == 3:
+        assert context_latent.shape[0] == 1
+        assert 50 < context_latent.shape[1] < 185
+        assert context_latent.shape[2] == 128
+    else:
+        assert 50 < context_latent.shape[0] < 185
+        assert context_latent.shape[1] == 128
+
+    assert target_latent.shape[-1] == 128
+    assert predictor_latent.shape[-1] == 128
+    assert traj.length > 0

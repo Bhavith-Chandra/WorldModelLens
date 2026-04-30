@@ -223,6 +223,15 @@ class LatentProber:
         X_train_scaled = scaler.fit_transform(X_train)
         X_test_scaled = scaler.transform(X_test)
 
+        train_cv_splits = 0
+        if is_classification:
+            _, train_counts = np.unique(y_train, return_counts=True)
+            if len(train_counts) > 1:
+                train_cv_splits = min(self.n_folds, int(train_counts.min()))
+        else:
+            if len(X_train_scaled) >= 2:
+                train_cv_splits = min(self.n_folds, len(X_train_scaled))
+
         best_alpha = 1.0
         best_cv_score = 0.0
 
@@ -234,17 +243,20 @@ class LatentProber:
                         C=1.0 / alpha, max_iter=1000, random_state=self.seed, solver="lbfgs"
                     )
 
-                    if use_cv and len(X_train_scaled) >= self.n_folds:
+                    if use_cv and train_cv_splits >= 2:
                         cv = StratifiedKFold(
-                            n_splits=self.n_folds, shuffle=True, random_state=self.seed
+                            n_splits=train_cv_splits, shuffle=True, random_state=self.seed
                         )
-                        scores = cross_val_score(
-                            model, X_train_scaled, y_train, cv=cv, scoring="accuracy"
-                        )
-                        mean_score = scores.mean()
-                        if mean_score > best_cv_score:
-                            best_cv_score = mean_score
-                            best_alpha = alpha
+                        try:
+                            scores = cross_val_score(
+                                model, X_train_scaled, y_train, cv=cv, scoring="accuracy"
+                            )
+                            mean_score = scores.mean()
+                            if mean_score > best_cv_score:
+                                best_cv_score = mean_score
+                                best_alpha = alpha
+                        except Exception:
+                            pass
 
                 model = LogisticRegression(
                     C=1.0 / best_alpha, max_iter=1000, random_state=self.seed, solver="lbfgs"
@@ -257,8 +269,8 @@ class LatentProber:
             if probe_type == "ridge" or probe_type == "linear":
                 for alpha in self.alphas:
                     model = Ridge(alpha=alpha, random_state=self.seed)
-                    if use_cv and len(X_train_scaled) >= self.n_folds:
-                        cv = KFold(n_splits=self.n_folds, shuffle=True, random_state=self.seed)
+                    if use_cv and train_cv_splits >= 2:
+                        cv = KFold(n_splits=train_cv_splits, shuffle=True, random_state=self.seed)
                         try:
                             scores = cross_val_score(
                                 model, X_train_scaled, y_train, cv=cv, scoring="r2"
@@ -292,14 +304,19 @@ class LatentProber:
         cv_mean = 0.0
         cv_std = 0.0
 
-        if use_cv and len(X_train_scaled) >= self.n_folds:
+        if use_cv and train_cv_splits >= 2:
             if is_classification:
-                cv = StratifiedKFold(n_splits=self.n_folds, shuffle=True, random_state=self.seed)
-                cv_scores = list(
-                    cross_val_score(model, X_train_scaled, y_train, cv=cv, scoring="accuracy")
+                cv = StratifiedKFold(
+                    n_splits=train_cv_splits, shuffle=True, random_state=self.seed
                 )
+                try:
+                    cv_scores = list(
+                        cross_val_score(model, X_train_scaled, y_train, cv=cv, scoring="accuracy")
+                    )
+                except Exception:
+                    cv_scores = []
             else:
-                cv = KFold(n_splits=self.n_folds, shuffle=True, random_state=self.seed)
+                cv = KFold(n_splits=train_cv_splits, shuffle=True, random_state=self.seed)
                 try:
                     cv_scores = list(
                         cross_val_score(model, X_train_scaled, y_train, cv=cv, scoring="r2")

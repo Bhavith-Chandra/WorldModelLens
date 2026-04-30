@@ -68,7 +68,9 @@ def test_ijepa_patch_axis_flow_and_keys():
     # 5. Verifications: Standardized Activation Keys (General)
     assert "encoder.out" in cache.component_names, "Should cache context encoder output"
     assert "target_encoder.out" in cache.component_names, "Should cache EMA target encoder output"
+    assert "target_encoder_out" in cache.component_names, "Should cache target-aligned EMA outputs"
     assert "predictor.final" in cache.component_names, "Should cache final predictor output"
+    assert "predictor_out" in cache.component_names, "Should cache predictor outputs under the probe-facing alias"
     
     # 6. Verifications: Specific Predictor Layer Indices
     # The user requested both general and specific layer indices verification.

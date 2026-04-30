@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 import numpy as np
 import torch
@@ -10,6 +10,7 @@ from PIL import Image
 
 from world_model_lens import HookedWorldModel, WorldModelConfig
 from world_model_lens.backends.ijepa_adapter import IJEPAAdapter
+from world_model_lens.core.types import WorldModelFamily
 
 try:
     from torchvision import transforms
@@ -58,6 +59,7 @@ def build_ijepa_config(
 ) -> WorldModelConfig:
     config = WorldModelConfig(
         backend="ijepa",
+        world_model_family=WorldModelFamily.JEPA,
         d_embed=d_embed,
         n_layers=n_layers,
         n_heads=n_heads,
@@ -85,9 +87,9 @@ def _load_checkpoint_state_dict(checkpoint_path: Path) -> dict[str, Any]:
 
 
 def load_ijepa_world_model(
-    checkpoint_path: Optional[str | Path] = None,
-    config: Optional[WorldModelConfig] = None,
-    device: Optional[str | torch.device] = None,
+    checkpoint_path: str | Path | None = None,
+    config: WorldModelConfig | None = None,
+    device: str | torch.device | None = None,
 ) -> tuple[HookedWorldModel, IJEPAAdapter, WorldModelConfig, Path]:
     checkpoint = Path(checkpoint_path) if checkpoint_path is not None else DEFAULT_CHECKPOINT
     if not checkpoint.exists():
@@ -107,7 +109,7 @@ def load_ijepa_world_model(
     return wm, adapter, config, checkpoint
 
 
-def _find_first_image(root: Path) -> Optional[Path]:
+def _find_first_image(root: Path) -> Path | None:
     patterns = ("*.jpg", "*.jpeg", "*.png", "*.bmp", "*.webp")
     for pattern in patterns:
         hits = sorted(root.rglob(pattern))
@@ -117,8 +119,8 @@ def _find_first_image(root: Path) -> Optional[Path]:
 
 
 def get_sample_image(
-    image_path: Optional[str | Path] = None,
-    imagenet_root: Optional[str | Path] = None,
+    image_path: str | Path | None = None,
+    imagenet_root: str | Path | None = None,
     image_size: int = 224,
 ) -> tuple[Image.Image, dict[str, Any]]:
     metadata: dict[str, Any] = {"source": "unknown"}
@@ -188,7 +190,9 @@ def preprocess_image(raw_image: Image.Image, image_size: int = 224) -> torch.Ten
     return tensor.unsqueeze(0)
 
 
-def get_patch_rect(patch_id: int, grid_size: int, image_size: int = 224) -> tuple[int, int, int, int]:
+def get_patch_rect(
+    patch_id: int, grid_size: int, image_size: int = 224
+) -> tuple[int, int, int, int]:
     row, col = divmod(int(patch_id), grid_size)
     patch_extent = image_size // grid_size
     return col * patch_extent, row * patch_extent, patch_extent, patch_extent
@@ -232,17 +236,16 @@ class PatchLabelBuilder:
         c_lo, c_hi = g // 4, g - g // 4
 
         return {
-            "top_half":         (rows < g // 2).astype(np.int64),
-            "left_half":        (cols < g // 2).astype(np.int64),
-            "center_band":      ((rows >= c_lo) & (rows < c_hi)).astype(np.int64),
+            "top_half": (rows < g // 2).astype(np.int64),
+            "left_half": (cols < g // 2).astype(np.int64),
+            "center_band": ((rows >= c_lo) & (rows < c_hi)).astype(np.int64),
             "patch_index_norm": ids.astype(np.float32) / max(g * g - 1, 1),
-            "row_norm":         rows.astype(np.float32) / max(g - 1, 1),
-            "col_norm":         cols.astype(np.float32) / max(g - 1, 1),
-            "quadrant":         (rows >= g // 2).astype(np.int64) * 2
-                                + (cols >= g // 2).astype(np.int64),
-            "is_boundary":      (
-                (rows == 0) | (rows == g - 1) | (cols == 0) | (cols == g - 1)
-            ).astype(np.int64),
+            "row_norm": rows.astype(np.float32) / max(g - 1, 1),
+            "col_norm": cols.astype(np.float32) / max(g - 1, 1),
+            "quadrant": (rows >= g // 2).astype(np.int64) * 2 + (cols >= g // 2).astype(np.int64),
+            "is_boundary": ((rows == 0) | (rows == g - 1) | (cols == 0) | (cols == g - 1)).astype(
+                np.int64
+            ),
         }
 
     def build_content(self, raw_image) -> dict[str, np.ndarray]:
@@ -255,9 +258,9 @@ class PatchLabelBuilder:
           texture_variance— luminance variance [0, 1]
           saturation      — mean HSV-style saturation [0, 1]
         """
-        img = np.array(
-            raw_image.resize((self.image_size, self.image_size))
-        ).astype(np.float32)   # [H, W, 3], values in [0, 255]
+        img = np.array(raw_image.resize((self.image_size, self.image_size))).astype(
+            np.float32
+        )  # [H, W, 3], values in [0, 255]
 
         p = self.patch_extent
         brightness_vals, edge_vals, texture_vals, sat_vals = [], [], [], []
@@ -265,12 +268,12 @@ class PatchLabelBuilder:
         for patch_id in self.patch_ids:
             row, col = divmod(int(patch_id), self.grid_size)
             y0, x0 = row * p, col * p
-            patch = img[y0:y0 + p, x0:x0 + p]   # [p, p, 3]
+            patch = img[y0 : y0 + p, x0 : x0 + p]  # [p, p, 3]
 
             lum = 0.299 * patch[:, :, 0] + 0.587 * patch[:, :, 1] + 0.114 * patch[:, :, 2]
 
             brightness_vals.append(float(lum.mean() / 255.0))
-            texture_vals.append(float(lum.var() / (255.0 ** 2)))
+            texture_vals.append(float(lum.var() / (255.0**2)))
 
             gy = float(np.abs(np.diff(lum, axis=0)).mean())
             gx = float(np.abs(np.diff(lum, axis=1)).mean())
@@ -282,10 +285,10 @@ class PatchLabelBuilder:
             sat_vals.append(float(sat.mean()))
 
         return {
-            "brightness":       np.array(brightness_vals, dtype=np.float32),
-            "edge_density":     np.array(edge_vals,       dtype=np.float32),
-            "texture_variance": np.array(texture_vals,    dtype=np.float32),
-            "saturation":       np.array(sat_vals,        dtype=np.float32),
+            "brightness": np.array(brightness_vals, dtype=np.float32),
+            "edge_density": np.array(edge_vals, dtype=np.float32),
+            "texture_variance": np.array(texture_vals, dtype=np.float32),
+            "saturation": np.array(sat_vals, dtype=np.float32),
         }
 
     def build_all(self, raw_image) -> dict[str, np.ndarray]:
@@ -342,44 +345,47 @@ def collect_ijepa_artifacts(
 
     grid_size = adapter.context_encoder.patch_embed.grid_size
     patch_size = adapter.context_encoder.patch_embed.patch_size
-    num_patches = adapter.context_encoder.patch_embed.n_patches
     context_ids = list(adapter.last_context_ids or [])
     target_ids = list(adapter.last_target_ids or [])
 
     components: dict[str, PatchComponent] = {}
-    context_latents_device = None
 
-    if "z_posterior" in cache.component_names:
-        context_latents_device = cache["z_posterior", 0]
-        if context_latents_device.dim() != 2:
-            context_latents_device = context_latents_device.reshape(context_latents_device.shape[0], -1)
-        components["z_posterior"] = PatchComponent(
-            name="z_posterior",
+    if "encoder.out" in cache.component_names:
+        context_latents_device = cache["encoder.out", 0]
+        if context_latents_device.dim() == 3 and context_latents_device.shape[0] == 1:
+            context_latents_device = context_latents_device.squeeze(0)
+        elif context_latents_device.dim() != 2:
+            context_latents_device = context_latents_device.reshape(
+                context_latents_device.shape[0], -1
+            )
+        components["encoder.out"] = PatchComponent(
+            name="encoder.out",
             activations=context_latents_device.detach().cpu(),
             patch_ids=context_ids,
-            description="Context-patch latents returned by HookedWorldModel.encode().",
+            description="Context-encoder patch latents for the visible context patches.",
         )
 
-    if "target_encoding" in cache.component_names:
-        target_encoding = cache["target_encoding", 0]
-        if target_encoding.dim() != 2:
+    if "target_encoder_out" in cache.component_names:
+        target_encoding = cache["target_encoder_out", 0]
+        if target_encoding.dim() == 3 and target_encoding.shape[0] == 1:
+            target_encoding = target_encoding.squeeze(0)
+        elif target_encoding.dim() != 2:
             target_encoding = target_encoding.reshape(target_encoding.shape[0], -1)
-        components["target_encoding"] = PatchComponent(
-            name="target_encoding",
+        components["target_encoder_out"] = PatchComponent(
+            name="target_encoder_out",
             activations=target_encoding.detach().cpu(),
-            patch_ids=list(range(num_patches)),
-            description="Full target-encoder patch embeddings.",
+            patch_ids=target_ids,
+            description="Target-encoder embeddings aligned to the currently masked target patches.",
         )
 
-    if context_latents_device is not None and context_ids and target_ids:
-        with torch.no_grad():
-            predictor_targets = adapter.predictor(
-                context_latents_device.unsqueeze(0),
-                context_ids,
-                target_ids,
-            ).squeeze(0)
-        components["predictor_targets"] = PatchComponent(
-            name="predictor_targets",
+    if "predictor_out" in cache.component_names:
+        predictor_targets = cache["predictor_out", 0]
+        if predictor_targets.dim() == 3 and predictor_targets.shape[0] == 1:
+            predictor_targets = predictor_targets.squeeze(0)
+        elif predictor_targets.dim() != 2:
+            predictor_targets = predictor_targets.reshape(predictor_targets.shape[0], -1)
+        components["predictor_out"] = PatchComponent(
+            name="predictor_out",
             activations=predictor_targets.detach().cpu(),
             patch_ids=target_ids,
             description="Predictor outputs for the currently masked target patches.",

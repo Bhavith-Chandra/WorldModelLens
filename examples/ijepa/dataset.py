@@ -1,9 +1,10 @@
 """Multi-image probing dataset builder for I-JEPA."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import numpy as np
 import torch
@@ -16,18 +17,18 @@ from utils import PatchLabelBuilder, collect_ijepa_artifacts, preprocess_image
 class ComponentProbingData:
     """Aggregated activations and labels for one I-JEPA component across N images."""
 
-    activations: torch.Tensor       # [N_patches_total, D]
-    labels: Dict[str, np.ndarray]   # concept -> [N_patches_total]
+    activations: torch.Tensor  # [N_patches_total, D]
+    labels: dict[str, np.ndarray]  # concept -> [N_patches_total]
 
 
 @dataclass
 class MultiImageProbingDataset:
     """Patch activations + labels aggregated across multiple images."""
 
-    components: Dict[str, ComponentProbingData]
+    components: dict[str, ComponentProbingData]
     n_images: int
-    concept_names: List[str]
-    component_names: List[str]
+    concept_names: list[str]
+    component_names: list[str]
 
     @property
     def n_patches_total(self) -> int:
@@ -41,7 +42,7 @@ class MultiImageProbingDataset:
 # ---------------------------------------------------------------------------
 
 
-def _make_synthetic_images(n: int, image_size: int = 224) -> List[Image.Image]:
+def _make_synthetic_images(n: int, image_size: int = 224) -> list[Image.Image]:
     """Generate n varied synthetic PIL images covering different pixel statistics.
 
     Six image types cycle: angle-gradient, noise, checkerboard, radial,
@@ -57,9 +58,9 @@ def _make_synthetic_images(n: int, image_size: int = 224) -> List[Image.Image]:
             angle = (i / max(n, 1)) * np.pi
             g = np.linspace(0, 255, image_size, dtype=np.float32)
             xv, yv = np.meshgrid(g, g)
-            r  = np.clip(np.cos(angle) * xv + np.sin(angle) * yv, 0, 255)
+            r = np.clip(np.cos(angle) * xv + np.sin(angle) * yv, 0, 255)
             gr = np.clip(np.sin(angle) * xv + np.cos(angle) * yv, 0, 255)
-            b  = (xv + yv) / 2
+            b = (xv + yv) / 2
             arr = np.stack([r, gr, b], axis=-1).astype(np.uint8)
 
         elif kind == 1:
@@ -78,18 +79,18 @@ def _make_synthetic_images(n: int, image_size: int = 224) -> List[Image.Image]:
             xs = np.arange(image_size, dtype=np.float32) - c
             ys = np.arange(image_size, dtype=np.float32) - c
             xv, yv = np.meshgrid(xs, ys)
-            dist = np.sqrt(xv ** 2 + yv ** 2)
+            dist = np.sqrt(xv**2 + yv**2)
             val = (dist / (dist.max() + 1e-8) * 255).astype(np.uint8)
             hue = ((np.arctan2(yv, xv) + np.pi) / (2 * np.pi) * 255).astype(np.uint8)
             arr = np.stack([val, hue, (255 - val).astype(np.uint8)], axis=-1)
 
         elif kind == 4:
             small = rng.random((image_size // 16, image_size // 16, 3))
-            small = ((small - small.min()) / (small.max() - small.min() + 1e-8) * 255).astype(np.uint8)
-            resample = getattr(getattr(Image, "Resampling", None), "BILINEAR", Image.BILINEAR)
-            arr = np.array(
-                Image.fromarray(small).resize((image_size, image_size), resample)
+            small = ((small - small.min()) / (small.max() - small.min() + 1e-8) * 255).astype(
+                np.uint8
             )
+            resample = getattr(getattr(Image, "Resampling", None), "BILINEAR", Image.BILINEAR)
+            arr = np.array(Image.fromarray(small).resize((image_size, image_size), resample))
 
         else:
             sh = max(8, 8 + (i % 8) * 3)
@@ -97,11 +98,14 @@ def _make_synthetic_images(n: int, image_size: int = 224) -> List[Image.Image]:
             val = ((row_idx // sh) % 2 * 200 + 55).astype(np.uint8)
             base = np.tile(val[:, None], (1, image_size))
             shift = (i * 30) % 256
-            arr = np.stack([
-                base,
-                np.roll(base, shift, axis=1).astype(np.uint8),
-                (255 - base).astype(np.uint8),
-            ], axis=-1)
+            arr = np.stack(
+                [
+                    base,
+                    np.roll(base, shift, axis=1).astype(np.uint8),
+                    (255 - base).astype(np.uint8),
+                ],
+                axis=-1,
+            )
 
         images.append(Image.fromarray(arr.astype(np.uint8), mode="RGB"))
 
@@ -116,7 +120,7 @@ def _make_synthetic_images(n: int, image_size: int = 224) -> List[Image.Image]:
 def build_multi_image_dataset(
     wm: Any,
     adapter: Any,
-    image_paths: Optional[List[Path]] = None,
+    image_paths: list[Path] | None = None,
     n_synthetic: int = 100,
     image_size: int = 224,
     verbose: bool = True,
@@ -141,15 +145,14 @@ def build_multi_image_dataset(
         MultiImageProbingDataset ready to pass to LatentProber.train_probe().
     """
     if image_paths is not None:
-        raw_images: List[Image.Image] = [
-            Image.open(p).convert("RGB").resize((image_size, image_size))
-            for p in image_paths
+        raw_images: list[Image.Image] = [
+            Image.open(p).convert("RGB").resize((image_size, image_size)) for p in image_paths
         ]
     else:
         raw_images = _make_synthetic_images(n_synthetic, image_size)
 
-    acc_acts: Dict[str, List[torch.Tensor]] = {}
-    acc_labels: Dict[str, Dict[str, List[np.ndarray]]] = {}
+    acc_acts: dict[str, list[torch.Tensor]] = {}
+    acc_labels: dict[str, dict[str, list[np.ndarray]]] = {}
     n_ok = 0
 
     for idx, raw_image in enumerate(raw_images):
@@ -180,7 +183,7 @@ def build_multi_image_dataset(
     if n_ok == 0:
         raise RuntimeError("No images processed successfully — check model / adapter.")
 
-    components: Dict[str, ComponentProbingData] = {
+    components: dict[str, ComponentProbingData] = {
         comp_name: ComponentProbingData(
             activations=torch.cat(acc_acts[comp_name], dim=0),
             labels={k: np.concatenate(acc_labels[comp_name][k]) for k in acc_labels[comp_name]},

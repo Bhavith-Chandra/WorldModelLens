@@ -43,8 +43,12 @@ class ForwardRunner:
         states = []
 
         is_patch_axis = False
-        if hasattr(self.hooked, "config"):
-            is_patch_axis = getattr(self.hooked.config, "world_model_family", None) == WorldModelFamily.JEPA
+        if hasattr(self.hooked, "_get_world_model_family"):
+            is_patch_axis = self.hooked._get_world_model_family() == WorldModelFamily.JEPA
+        elif hasattr(self.hooked, "config"):
+            backend = getattr(self.hooked.config, "backend", None)
+            family = getattr(self.hooked.config, "world_model_family", None)
+            is_patch_axis = backend == "ijepa" or family == WorldModelFamily.JEPA
             
         if is_patch_axis:
             return self._run_forward_patch_axis(obs_seq, cache, names_filter, ctx_mgr)
@@ -212,20 +216,23 @@ class ForwardRunner:
             # Predictor final projections
             target_preds = x[:, len(c_ids):, :]
             target_preds = adapter.predictor.predictor_project_back(target_preds)
+            target_subset = target_reps[:, t_ids, :] if target_reps.dim() == 3 else target_reps[t_ids]
             if manager is not None:
                 manager.apply_and_cache("predictor.final", 0, target_preds, ctx, cache, names_filter)
+                manager.apply_and_cache("predictor_out", 0, target_preds, ctx, cache, names_filter)
+                manager.apply_and_cache("target_encoder_out", 0, target_subset, ctx, cache, names_filter)
 
             # 4. Map output to LatentTrajectory across the spatial sequence (patches as timesteps)
             # We align patch sequences to timesteps. 
             num_targets = len(t_ids)
             for t in range(num_targets):
                 h_patch = target_preds[:, t, :] if target_preds.dim() == 3 else target_preds[t]
+                target_patch = target_subset[:, t, :] if target_subset.dim() == 3 else target_subset[t]
                 
-                # Mock a LatentTrajectory spatial step
                 state = self.hooked._build_state(
                     h=h_patch,
-                    z_post_prob=torch.zeros_like(h_patch),
-                    z_prior_prob=torch.zeros_like(h_patch),
+                    z_post_prob=target_patch,
+                    z_prior_prob=h_patch,
                     t=t,
                     action_seq=None,
                     reward_val=None,
@@ -233,6 +240,14 @@ class ForwardRunner:
                     actor_logits_out=None,
                     value_val=None,
                 )
+                if hasattr(state, "metadata"):
+                    state.metadata.update(
+                        {
+                            "patch_id": int(t_ids[t]),
+                            "context_patch_ids": list(c_ids),
+                            "target_patch_ids": list(t_ids),
+                        }
+                    )
                 states.append(state)
 
         return LatentTrajectory(

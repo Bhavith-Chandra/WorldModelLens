@@ -4,20 +4,16 @@ import random
 import warnings
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
 from sklearn.exceptions import ConvergenceWarning
-from sklearn.linear_model import LogisticRegression, Ridge
 from sklearn.metrics import r2_score
-from sklearn.model_selection import StratifiedKFold, cross_val_score, train_test_split
+from sklearn.model_selection import train_test_split
 from sklearn.neural_network import MLPClassifier, MLPRegressor
 from sklearn.preprocessing import StandardScaler
-
-from world_model_lens import HookedWorldModel, LatentProber, WorldModelConfig
-from world_model_lens.backends.ijepa_adapter import IJEPAAdapter
 
 from utils import (
     DEFAULT_CHECKPOINT,
@@ -30,6 +26,8 @@ from utils import (
     get_sample_image,
     preprocess_image,
 )
+from world_model_lens import HookedWorldModel, LatentProber, WorldModelConfig
+from world_model_lens.backends.ijepa_adapter import IJEPAAdapter
 
 warnings.filterwarnings("ignore", category=ConvergenceWarning)
 
@@ -60,9 +58,9 @@ class AttentionHeadProbeResult:
 
 
 _COMPONENT_ORDER = [
-    "z_posterior",
-    "target_encoding",
-    "predictor_targets",
+    "encoder.out",
+    "target_encoder_out",
+    "predictor_out",
     "predictor_residual",
 ]
 
@@ -75,9 +73,9 @@ def set_seed(seed: int) -> None:
 
 def load_condition_world_model(
     condition: str,
-    checkpoint_path: Optional[str | Path] = None,
-    device: Optional[str | torch.device] = None,
-    config: Optional[WorldModelConfig] = None,
+    checkpoint_path: str | Path | None = None,
+    device: str | torch.device | None = None,
+    config: WorldModelConfig | None = None,
     seed: int = 42,
 ) -> tuple[HookedWorldModel, IJEPAAdapter, WorldModelConfig, str]:
     set_seed(seed)
@@ -88,9 +86,15 @@ def load_condition_world_model(
     if condition_name == "pretrained":
         checkpoint = Path(checkpoint_path) if checkpoint_path is not None else DEFAULT_CHECKPOINT
         payload = torch.load(checkpoint, map_location="cpu")
-        if isinstance(payload, dict) and "state_dict" in payload and isinstance(payload["state_dict"], dict):
+        if (
+            isinstance(payload, dict)
+            and "state_dict" in payload
+            and isinstance(payload["state_dict"], dict)
+        ):
             payload = payload["state_dict"]
-        elif isinstance(payload, dict) and "model" in payload and isinstance(payload["model"], dict):
+        elif (
+            isinstance(payload, dict) and "model" in payload and isinstance(payload["model"], dict)
+        ):
             payload = payload["model"]
         adapter.load_state_dict(payload, strict=False)
         label = f"pretrained:{checkpoint.name}"
@@ -108,8 +112,8 @@ def load_condition_world_model(
 
 
 def prepare_example_input(
-    image_path: Optional[str | Path] = None,
-    imagenet_root: Optional[str | Path] = None,
+    image_path: str | Path | None = None,
+    imagenet_root: str | Path | None = None,
     image_size: int = 224,
 ):
     raw_image, metadata = get_sample_image(
@@ -121,7 +125,9 @@ def prepare_example_input(
     return raw_image, image_tensor, metadata
 
 
-def assign_fixed_masks(adapter: IJEPAAdapter, context_ids: list[int], target_ids: list[int]) -> None:
+def assign_fixed_masks(
+    adapter: IJEPAAdapter, context_ids: list[int], target_ids: list[int]
+) -> None:
     adapter.last_context_ids = list(context_ids)
     adapter.last_target_ids = list(target_ids)
 
@@ -131,9 +137,9 @@ def collect_condition_artifacts(
     raw_image,
     image_tensor: torch.Tensor,
     *,
-    checkpoint_path: Optional[str | Path] = None,
-    device: Optional[str | torch.device] = None,
-    fixed_masks: Optional[tuple[list[int], list[int]]] = None,
+    checkpoint_path: str | Path | None = None,
+    device: str | torch.device | None = None,
+    fixed_masks: tuple[list[int], list[int]] | None = None,
     seed: int = 42,
 ):
     wm, adapter, config, label = load_condition_world_model(
@@ -160,20 +166,24 @@ class NonlinearProber:
         concept_name: str,
         activation_name: str,
     ) -> ProbeMetric:
-        X = activations.detach().cpu().numpy() if isinstance(activations, torch.Tensor) else activations
+        x = (
+            activations.detach().cpu().numpy()
+            if isinstance(activations, torch.Tensor)
+            else activations
+        )
         y = np.asarray(labels)
         is_classification = y.dtype.kind in {"i", "b"} or len(np.unique(y)) < 20
 
-        X_train, X_test, y_train, y_test = train_test_split(
-            X,
+        x_train, x_test, y_train, y_test = train_test_split(
+            x,
             y,
             test_size=0.2,
             random_state=self.seed,
             stratify=y if is_classification else None,
         )
         scaler = StandardScaler()
-        X_train = scaler.fit_transform(X_train)
-        X_test = scaler.transform(X_test)
+        x_train = scaler.fit_transform(x_train)
+        x_test = scaler.transform(x_test)
 
         if is_classification:
             model = MLPClassifier(
@@ -183,8 +193,8 @@ class NonlinearProber:
                 max_iter=400,
                 random_state=self.seed,
             )
-            model.fit(X_train, y_train)
-            score = float(model.score(X_test, y_test))
+            model.fit(x_train, y_train)
+            score = float(model.score(x_test, y_test))
             score_name = "accuracy"
         else:
             model = MLPRegressor(
@@ -194,8 +204,8 @@ class NonlinearProber:
                 max_iter=400,
                 random_state=self.seed,
             )
-            model.fit(X_train, y_train)
-            preds = model.predict(X_test)
+            model.fit(x_train, y_train)
+            preds = model.predict(x_test)
             score = float(r2_score(y_test, preds))
             score_name = "r2"
 
@@ -214,7 +224,9 @@ def _component_sort_key(name: str) -> tuple[int, str]:
     return (len(_COMPONENT_ORDER), name)
 
 
-def build_patch_appearance_labels(raw_image, patch_ids: list[int], grid_size: int) -> dict[str, np.ndarray]:
+def build_patch_appearance_labels(
+    raw_image, patch_ids: list[int], grid_size: int
+) -> dict[str, np.ndarray]:
     array = np.asarray(raw_image.resize((224, 224))).astype(np.float32) / 255.0
     patch_extent = 224 // grid_size
     grayscale = array.mean(axis=2)
@@ -255,7 +267,9 @@ def build_probe_targets(raw_image, patch_ids: list[int], grid_size: int) -> dict
 
 
 @torch.no_grad()
-def _forward_vit_blocks(vit, image_tensor: torch.Tensor, patch_ids: Optional[list[int]], prefix: str):
+def _forward_vit_blocks(
+    vit, image_tensor: torch.Tensor, patch_ids: list[int] | None, prefix: str
+):
     x = vit.patch_embed(image_tensor)
     if patch_ids is not None:
         patch_ids_t = torch.tensor(patch_ids, device=x.device)
@@ -393,7 +407,7 @@ def run_linear_probe_metrics(
     activations: torch.Tensor,
     labels_dict: dict[str, np.ndarray],
     *,
-    probe_type_overrides: Optional[dict[str, str]] = None,
+    probe_type_overrides: dict[str, str] | None = None,
     seed: int = 42,
 ) -> list[ProbeMetric]:
     prober = LatentProber(seed=seed)
@@ -434,7 +448,9 @@ def run_probe_family_comparison(
         activations,
         labels_dict,
         probe_type_overrides={
-            concept: ("ridge" if labels.dtype.kind == "f" and len(np.unique(labels)) >= 20 else "logistic")
+            concept: (
+                "ridge" if labels.dtype.kind == "f" and len(np.unique(labels)) >= 20 else "logistic"
+            )
             for concept, labels in labels_dict.items()
         },
         seed=seed,
@@ -447,7 +463,10 @@ def run_probe_family_comparison(
 
 def summarize_probe_metrics(metrics: list[ProbeMetric]) -> str:
     lines = []
-    for metric in sorted(metrics, key=lambda item: (_component_sort_key(item.component), item.concept, item.probe_family)):
+    for metric in sorted(
+        metrics,
+        key=lambda item: (_component_sort_key(item.component), item.concept, item.probe_family),
+    ):
         lines.append(
             f"{metric.component}\t{metric.concept}\t{metric.probe_family}\t{metric.score_name}={metric.score:.4f}"
         )
@@ -461,7 +480,10 @@ def write_text(path: Path, text: str) -> None:
 
 def save_baseline_plot(baseline_rows: list[dict[str, Any]], output_path: Path) -> None:
     focus_rows = [
-        row for row in baseline_rows if row["component"] in {"z_posterior", "target_encoding", "predictor_targets"} and row["concept"] in {"top_half", "left_half", "brightness_high", "edge_dense"}
+        row
+        for row in baseline_rows
+        if row["component"] in {"encoder.out", "target_encoder_out", "predictor_out"}
+        and row["concept"] in {"top_half", "left_half", "brightness_high", "edge_dense"}
     ]
     labels = [f"{row['component']}\n{row['concept']}" for row in focus_rows]
     pretrained = [row["pretrained"] for row in focus_rows]
@@ -493,7 +515,11 @@ def save_layerwise_plot(layer_rows: list[dict[str, Any]], output_path: Path) -> 
     concept_order = ["top_half", "left_half", "brightness_high"]
 
     for family_name, ax in families:
-        family_rows = [row for row in layer_rows if row["family"] == family_name and row["concept"] in concept_order]
+        family_rows = [
+            row
+            for row in layer_rows
+            if row["family"] == family_name and row["concept"] in concept_order
+        ]
         for concept in concept_order:
             concept_rows = sorted(
                 [row for row in family_rows if row["concept"] == concept],
@@ -537,8 +563,19 @@ def save_nonlinear_gap_plot(metric_rows: list[dict[str, Any]], output_path: Path
     ax.bar(np.arange(len(labels)), gaps, color=colors, alpha=0.85, edgecolor="white")
     ax.axhline(0.0, color="black", linewidth=1)
     for i, gap in enumerate(gaps):
-        ax.text(i, gap + (0.005 if gap >= 0 else -0.012), f"{gap:+.2f}", ha="center", va="bottom" if gap >= 0 else "top", fontsize=7.5)
-    ax.set_title("Nonlinear Probe Gain (MLP − Linear accuracy)\nclassification concepts only", fontweight="bold", pad=8)
+        ax.text(
+            i,
+            gap + (0.005 if gap >= 0 else -0.012),
+            f"{gap:+.2f}",
+            ha="center",
+            va="bottom" if gap >= 0 else "top",
+            fontsize=7.5,
+        )
+    ax.set_title(
+        "Nonlinear Probe Gain (MLP − Linear accuracy)\nclassification concepts only",
+        fontweight="bold",
+        pad=8,
+    )
     ax.set_ylabel("Accuracy delta (MLP − linear)")
     ax.set_ylim(-0.25, 0.25)
     ax.set_xticks(np.arange(len(labels)))
@@ -559,18 +596,31 @@ def save_mask_sensitivity_plot(mask_rows: list[dict[str, Any]], output_path: Pat
 
     fig, ax = plt.subplots(figsize=(10, 4.5))
     for concept in concepts:
-        rows = sorted([row for row in mask_rows if row["concept"] == concept], key=lambda r: r["mask_seed"])
+        rows = sorted(
+            [row for row in mask_rows if row["concept"] == concept], key=lambda r: r["mask_seed"]
+        )
         ys = [row["score"] for row in rows]
         xs = [seed_to_x[row["mask_seed"]] for row in rows]
-        ax.plot(xs, ys, marker="o", label=concept.replace("_", " "), color=concept_colors.get(concept, None), linewidth=1.8)
-        for xi, yi in zip(xs, ys):
+        ax.plot(
+            xs,
+            ys,
+            marker="o",
+            label=concept.replace("_", " "),
+            color=concept_colors.get(concept, None),
+            linewidth=1.8,
+        )
+        for xi, yi in zip(xs, ys, strict=False):
             ax.text(xi, yi + 0.015, f"{yi:.2f}", ha="center", va="bottom", fontsize=8)
     ax.axhline(0.5, color="#888", linestyle="--", linewidth=1.0, alpha=0.7, label="chance (0.5)")
     ax.set_xticks(x)
     ax.set_xticklabels([f"mask config {s}" for s in seeds], fontsize=9)
     ax.set_ylabel("Probe accuracy (predictor targets)", fontsize=9)
     ax.set_ylim(0.0, 1.1)
-    ax.set_title("Mask Configuration Sensitivity\n(predictor spatial decodability across different mask seeds)", fontweight="bold", pad=8)
+    ax.set_title(
+        "Mask Configuration Sensitivity\n(predictor spatial decodability across different mask seeds)",
+        fontweight="bold",
+        pad=8,
+    )
     ax.legend(fontsize=9)
     ax.grid(axis="y", alpha=0.3, linewidth=0.7)
     ax.spines[["top", "right"]].set_visible(False)
@@ -582,27 +632,46 @@ def save_mask_sensitivity_plot(mask_rows: list[dict[str, Any]], output_path: Pat
 def save_attention_head_plot(head_rows: list[dict[str, Any]], output_path: Path) -> None:
     # Only show heads that beat chance, top 15 per concept
     concepts = sorted({row["concept"] for row in head_rows})
-    concept_colors = {c: color for c, color in zip(concepts, ["#4C72B0", "#DD8452", "#55A868", "#C44E52"])}
+    concept_colors = dict(zip(concepts, ["#4C72B0", "#DD8452", "#55A868", "#C44E52"], strict=False))
     above_chance = [row for row in head_rows if row["score"] > 0.5]
     top_rows = sorted(above_chance, key=lambda row: row["score"], reverse=True)[:15]
 
-    labels = [f"{row['head_name'].replace('predictor.', '')}\n({row['concept'].replace('_', ' ')})" for row in top_rows]
+    labels = [
+        f"{row['head_name'].replace('predictor.', '')}\n({row['concept'].replace('_', ' ')})"
+        for row in top_rows
+    ]
     scores = [row["score"] for row in top_rows]
     colors = [concept_colors.get(row["concept"], "#9467bd") for row in top_rows]
 
     fig, ax = plt.subplots(figsize=(14, 5))
     bars = ax.bar(np.arange(len(labels)), scores, color=colors, alpha=0.85, edgecolor="white")
-    for bar, score in zip(bars, scores):
-        ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.01, f"{score:.2f}", ha="center", va="bottom", fontsize=7.5)
+    for bar, score in zip(bars, scores, strict=False):
+        ax.text(
+            bar.get_x() + bar.get_width() / 2,
+            bar.get_height() + 0.01,
+            f"{score:.2f}",
+            ha="center",
+            va="bottom",
+            fontsize=7.5,
+        )
     ax.axhline(0.5, color="#888", linestyle="--", linewidth=1.0, alpha=0.7, label="chance (0.5)")
     ax.set_ylim(0.0, 1.1)
     ax.set_ylabel("Probe accuracy", fontsize=9)
-    ax.set_title("Top Predictor Attention Heads by Probe Score\n(above-chance only, colored by concept)", fontweight="bold", pad=8)
+    ax.set_title(
+        "Top Predictor Attention Heads by Probe Score\n(above-chance only, colored by concept)",
+        fontweight="bold",
+        pad=8,
+    )
     ax.set_xticks(np.arange(len(labels)))
     ax.set_xticklabels(labels, rotation=35, ha="right", fontsize=8)
-    import matplotlib.patches as _mp
     import matplotlib.lines as _ml
-    legend_handles: list[Any] = [_mp.Patch(color=concept_colors[c], alpha=0.85, label=c.replace("_", " ")) for c in concepts if c in concept_colors]
+    import matplotlib.patches as _mp
+
+    legend_handles: list[Any] = [
+        _mp.Patch(color=concept_colors[c], alpha=0.85, label=c.replace("_", " "))
+        for c in concepts
+        if c in concept_colors
+    ]
     legend_handles.append(_ml.Line2D([0], [0], color="#888", linestyle="--", label="chance (0.5)"))
     ax.legend(handles=legend_handles, fontsize=8, loc="lower right")
     ax.grid(axis="y", alpha=0.3, linewidth=0.7)
@@ -615,7 +684,9 @@ def save_attention_head_plot(head_rows: list[dict[str, Any]], output_path: Path)
 def summarize_attention_heads(rows: list[dict[str, Any]]) -> str:
     lines = []
     for row in sorted(rows, key=lambda item: (-item["score"], item["head_name"], item["concept"])):
-        lines.append(f"{row['head_name']}\t{row['concept']}\t{row['score_name']}={row['score']:.4f}")
+        lines.append(
+            f"{row['head_name']}\t{row['concept']}\t{row['score_name']}={row['score']:.4f}"
+        )
     return "\n".join(lines)
 
 
@@ -664,12 +735,16 @@ def probe_predictor_attention_heads(
     return results
 
 
-def save_heatmap_for_component(component: PatchComponent, grid_size: int, raw_image, output_path: Path) -> None:
+def save_heatmap_for_component(
+    component: PatchComponent, grid_size: int, raw_image, output_path: Path
+) -> None:
     values = component.activations.norm(dim=1)
     heatmap = build_patch_heatmap(component.patch_ids, values, grid_size)
     fig, ax = plt.subplots(figsize=(5, 5))
     ax.imshow(raw_image.resize((224, 224)), alpha=0.55)
-    ax.imshow(heatmap, cmap="coolwarm", alpha=0.55, extent=(0, 224, 224, 0), interpolation="nearest")
+    ax.imshow(
+        heatmap, cmap="coolwarm", alpha=0.55, extent=(0, 224, 224, 0), interpolation="nearest"
+    )
     ax.set_title(component.name)
     ax.axis("off")
     fig.tight_layout()

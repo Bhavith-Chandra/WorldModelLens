@@ -7,7 +7,9 @@
       "Bash(python 12_ijepa_probing.py --checkpoint ijepa_mini.pth)",
       "Bash(cd /d C:\\\\Users\\\\user\\\\Desktop\\\\WorldModelLens)",
       "Bash(python -c \"import sys; sys.path.insert\\(0, 'examples/ijepa'\\); from importlib.util import spec_from_file_location, module_from_spec; spec = spec_from_file_location\\('example', 'examples/ijepa/12_ijepa_probing.py'\\); mod = module_from_spec\\(spec\\); print\\('Syntax check passed'\\)\")",
-      "Bash(python -m py_compile \"examples/ijepa/12_ijepa_probing.py\")"
+      "Bash(python -m py_compile \"examples/ijepa/12_ijepa_probing.py\")",
+      "Bash(ruff format *)",
+      "Bash(ruff check *)"
     ]
   }
 }

@@ -4,6 +4,7 @@ import argparse
 from pathlib import Path
 
 from experiment_utils import (
+    build_probe_targets,
     collect_condition_artifacts,
     collect_manual_components_and_attention,
     output_path,
@@ -21,20 +22,35 @@ from experiment_utils import (
     summarize_attention_heads,
     summarize_probe_metrics,
     write_text,
-    build_probe_targets,
 )
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="I-JEPA experiment suite for probing controls and extensions.")
-    parser.add_argument("--checkpoint", type=str, default=None, help="Optional pretrained checkpoint path.")
+    parser = argparse.ArgumentParser(
+        description="I-JEPA experiment suite for probing controls and extensions."
+    )
+    parser.add_argument(
+        "--checkpoint", type=str, default=None, help="Optional pretrained checkpoint path."
+    )
     parser.add_argument("--image", type=str, default=None, help="Optional image path.")
     parser.add_argument("--imagenet-root", type=str, default=None, help="Optional ImageNet root.")
     parser.add_argument("--device", type=str, default="cpu", help="Torch device.")
-    parser.add_argument("--output-dir", type=str, default=None, help="Optional output directory override.")
-    parser.add_argument("--mask-seeds", type=int, nargs="*", default=[7, 11, 19, 23, 31, 47], help="Mask seeds for sensitivity sweep.")
-    parser.add_argument("--seed", type=int, default=42, help="Random seed for deterministic comparisons.")
-    parser.add_argument("--fast", action="store_true", help="Run a smaller sweep for smoke testing.")
+    parser.add_argument(
+        "--output-dir", type=str, default=None, help="Optional output directory override."
+    )
+    parser.add_argument(
+        "--mask-seeds",
+        type=int,
+        nargs="*",
+        default=[7, 11, 19, 23, 31, 47],
+        help="Mask seeds for sensitivity sweep.",
+    )
+    parser.add_argument(
+        "--seed", type=int, default=42, help="Random seed for deterministic comparisons."
+    )
+    parser.add_argument(
+        "--fast", action="store_true", help="Run a smaller sweep for smoke testing."
+    )
     return parser.parse_args()
 
 
@@ -71,12 +87,18 @@ def main() -> None:
     )
 
     baseline_rows = []
-    for component_name in ["z_posterior", "target_encoding", "predictor_targets"]:
+    for component_name in ["encoder.out", "target_encoder_out", "predictor_out"]:
         pretrained_component = pretrained_artifacts.components[component_name]
         random_component = random_artifacts.components[component_name]
-        labels = build_probe_targets(raw_image, pretrained_component.patch_ids, pretrained_artifacts.grid_size)
-        pretrained_metrics = run_linear_probe_metrics(component_name, pretrained_component.activations, labels, seed=args.seed)
-        random_metrics = run_linear_probe_metrics(component_name, random_component.activations, labels, seed=args.seed)
+        labels = build_probe_targets(
+            raw_image, pretrained_component.patch_ids, pretrained_artifacts.grid_size
+        )
+        pretrained_metrics = run_linear_probe_metrics(
+            component_name, pretrained_component.activations, labels, seed=args.seed
+        )
+        random_metrics = run_linear_probe_metrics(
+            component_name, random_component.activations, labels, seed=args.seed
+        )
         random_by_concept = {metric.concept: metric for metric in random_metrics}
         for metric in pretrained_metrics:
             baseline_rows.append(
@@ -113,16 +135,31 @@ def main() -> None:
     )
 
     residual_component = manual_components["predictor_residual"]
-    residual_labels = build_probe_targets(raw_image, residual_component.patch_ids, pretrained_artifacts.grid_size)
+    residual_labels = build_probe_targets(
+        raw_image, residual_component.patch_ids, pretrained_artifacts.grid_size
+    )
     residual_metrics = []
-    for component_name in ["predictor_targets", "target_encoding"]:
+    for component_name in ["predictor_out", "target_encoder_out"]:
         component = pretrained_artifacts.components[component_name]
-        component_labels = build_probe_targets(raw_image, component.patch_ids, pretrained_artifacts.grid_size)
-        residual_metrics.extend(run_linear_probe_metrics(component_name, component.activations, component_labels, seed=args.seed))
-    residual_metrics.extend(run_linear_probe_metrics("predictor_residual", residual_component.activations, residual_labels, seed=args.seed))
+        component_labels = build_probe_targets(
+            raw_image, component.patch_ids, pretrained_artifacts.grid_size
+        )
+        residual_metrics.extend(
+            run_linear_probe_metrics(
+                component_name, component.activations, component_labels, seed=args.seed
+            )
+        )
+    residual_metrics.extend(
+        run_linear_probe_metrics(
+            "predictor_residual", residual_component.activations, residual_labels, seed=args.seed
+        )
+    )
     write_text(
         output_path("ijepa_predictor_residual_summary.txt"),
-        "I-JEPA Predictor Residual Probing\n" + "=" * 40 + "\n" + summarize_probe_metrics(residual_metrics),
+        "I-JEPA Predictor Residual Probing\n"
+        + "=" * 40
+        + "\n"
+        + summarize_probe_metrics(residual_metrics),
     )
     save_heatmap_for_component(
         residual_component,
@@ -135,17 +172,23 @@ def main() -> None:
     layer_component_names = [
         name
         for name in manual_components
-        if name.startswith("context_encoder.block_") or name.startswith("target_encoder.block_") or name.startswith("predictor.block_")
+        if name.startswith("context_encoder.block_")
+        or name.startswith("target_encoder.block_")
+        or name.startswith("predictor.block_")
     ]
     probe_concepts = {"top_half", "left_half", "brightness_high"}
     for component_name in sorted(layer_component_names):
         component = manual_components[component_name]
         labels = {
             key: value
-            for key, value in build_probe_targets(raw_image, component.patch_ids, pretrained_artifacts.grid_size).items()
+            for key, value in build_probe_targets(
+                raw_image, component.patch_ids, pretrained_artifacts.grid_size
+            ).items()
             if key in probe_concepts
         }
-        metrics = run_linear_probe_metrics(component_name, component.activations, labels, seed=args.seed)
+        metrics = run_linear_probe_metrics(
+            component_name, component.activations, labels, seed=args.seed
+        )
         family = component_name.split(".", 1)[0]
         layer_index = int(component_name.split("block_")[1])
         for metric in metrics:
@@ -160,7 +203,9 @@ def main() -> None:
                 }
             )
     layer_lines = ["I-JEPA Layer-wise Probing", "=" * 40]
-    for row in sorted(layer_rows, key=lambda item: (item["family"], item["layer_index"], item["concept"])):
+    for row in sorted(
+        layer_rows, key=lambda item: (item["family"], item["layer_index"], item["concept"])
+    ):
         layer_lines.append(
             f"{row['family']}\tlayer={row['layer_index']}\t{row['concept']}\t{row['score_name']}={row['score']:.4f}"
         )
@@ -168,16 +213,36 @@ def main() -> None:
     save_layerwise_plot(layer_rows, output_path("ijepa_layerwise_probing.png"))
 
     nonlinear_rows = []
-    nonlinear_components = ["z_posterior", "target_encoding", "predictor_targets", "predictor_residual"]
-    nonlinear_concepts = {"top_half", "left_half", "brightness_high", "edge_dense", "brightness_mean", "edge_density"}
+    nonlinear_components = [
+        "encoder.out",
+        "target_encoder_out",
+        "predictor_out",
+        "predictor_residual",
+    ]
+    nonlinear_concepts = {
+        "top_half",
+        "left_half",
+        "brightness_high",
+        "edge_dense",
+        "brightness_mean",
+        "edge_density",
+    }
     for component_name in nonlinear_components:
-        component = residual_component if component_name == "predictor_residual" else pretrained_artifacts.components[component_name]
+        component = (
+            residual_component
+            if component_name == "predictor_residual"
+            else pretrained_artifacts.components[component_name]
+        )
         labels = {
             key: value
-            for key, value in build_probe_targets(raw_image, component.patch_ids, pretrained_artifacts.grid_size).items()
+            for key, value in build_probe_targets(
+                raw_image, component.patch_ids, pretrained_artifacts.grid_size
+            ).items()
             if key in nonlinear_concepts
         }
-        metrics = run_probe_family_comparison(component_name, component.activations, labels, seed=args.seed)
+        metrics = run_probe_family_comparison(
+            component_name, component.activations, labels, seed=args.seed
+        )
         for metric in metrics:
             nonlinear_rows.append(
                 {
@@ -189,7 +254,9 @@ def main() -> None:
                 }
             )
     nonlinear_lines = ["I-JEPA Nonlinear Probe Comparison", "=" * 40]
-    for row in sorted(nonlinear_rows, key=lambda item: (item["component"], item["concept"], item["probe_family"])):
+    for row in sorted(
+        nonlinear_rows, key=lambda item: (item["component"], item["concept"], item["probe_family"])
+    ):
         nonlinear_lines.append(
             f"{row['component']}\t{row['concept']}\t{row['probe_family']}\t{row['score_name']}={row['score']:.4f}"
         )
@@ -206,9 +273,11 @@ def main() -> None:
             device=args.device,
             seed=mask_seed,
         )
-        component = mask_artifacts.components["predictor_targets"]
+        component = mask_artifacts.components["predictor_out"]
         labels = build_probe_targets(raw_image, component.patch_ids, mask_artifacts.grid_size)
-        metrics = run_linear_probe_metrics("predictor_targets", component.activations, labels, seed=args.seed)
+        metrics = run_linear_probe_metrics(
+            "predictor_out", component.activations, labels, seed=args.seed
+        )
         for metric in metrics:
             if metric.concept in {"top_half", "left_half", "brightness_high"}:
                 mask_rows.append(
@@ -246,7 +315,10 @@ def main() -> None:
     ]
     write_text(
         output_path("ijepa_attention_head_probing.txt"),
-        "I-JEPA Predictor Attention Head Probing\n" + "=" * 40 + "\n" + summarize_attention_heads(attention_rows),
+        "I-JEPA Predictor Attention Head Probing\n"
+        + "=" * 40
+        + "\n"
+        + summarize_attention_heads(attention_rows),
     )
     save_attention_head_plot(attention_rows, output_path("ijepa_attention_head_probing.png"))
 
