@@ -249,19 +249,40 @@ class DreamerV3Adapter(BaseModelAdapter):
     @classmethod
     def infer_config(cls, state_dict: Dict) -> AdapterConfig:
         """Infer config from state dict shapes."""
-        d_z = 0
         d_h = 0
+        d_z = 0
         d_action = 0
+        d_obs = 0
+        encoder_type = "cnn"
 
-        for key in state_dict.keys():
-            if "transition.gru" in key and "weight_ih" in key:
-                d_z_plus_action = state_dict[key].shape[1]
-            if "dynamics.mlp.layers.0.weight" in key:
-                d_h = state_dict[key].shape[0]
-            if "actor.mlp.layers.0.weight" in key and d_action == 0:
-                d_z_plus_action = state_dict[key].shape[1] - d_h
+        transition_weight = state_dict.get("transition_layer.gru.weight_ih")
+        if transition_weight is not None:
+            d_h = transition_weight.shape[0] // 3
 
-        return AdapterConfig(d_h=d_h or 512, d_z=d_z or 1024, d_action=d_action or 4)
+        encoder_fc_weight = state_dict.get("encoder.fc.weight")
+        if encoder_fc_weight is not None:
+            d_z = encoder_fc_weight.shape[0]
+
+        dynamics_first = state_dict.get("dynamics_model.mlp.layers.0.weight")
+        if dynamics_first is not None:
+            d_h = d_h or dynamics_first.shape[0]
+
+        if "encoder.vector.mlp.layers.0.weight" in state_dict:
+            encoder_type = "mlp"
+            d_obs = state_dict["encoder.vector.mlp.layers.0.weight"].shape[1]
+        elif "encoder.cnn.cnn.0.weight" in state_dict:
+            encoder_type = "cnn"
+
+        if transition_weight is not None and d_z:
+            d_action = transition_weight.shape[1] - d_z
+
+        return AdapterConfig(
+            d_h=d_h or 512,
+            d_z=d_z or 1024,
+            d_action=d_action or 4,
+            d_obs=d_obs,
+            encoder_type=encoder_type,
+        )
 
     def encode(self, obs: torch.Tensor, h_prev: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """Encode observation to posterior logits."""
