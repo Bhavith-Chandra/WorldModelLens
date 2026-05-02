@@ -254,9 +254,9 @@ class BaseModelAdapter(ABC, nn.Module):
         hard = torch.nn.functional.one_hot(indices, num_classes=n_cls).float()
         return (hard - soft).detach() + soft
 
-    def named_parameters(self) -> Dict[str, torch.Tensor]:
+    def named_parameters_dict(self) -> Dict[str, torch.Tensor]:
         """Return named parameters like standard nn.Module."""
-        return dict(nn.Module.named_parameters(self))
+        return dict(super().named_parameters())
 
     # ==================== OPTIONAL METHODS ====================
     # Only implement if your model actually has these heads
@@ -442,7 +442,8 @@ class BaseModelAdapter(ABC, nn.Module):
 
         return torch.stack(h_seq, dim=0), torch.stack(z_seq, dim=0)
 
-    def to(self, device: torch.device) -> "BaseModelAdapter":
+
+    def to(self, *args: Any, device: torch.device, **kwargs: Any) -> "BaseModelAdapter":
         """Move adapter to device (standard nn.Module interface)."""
         return super().to(device)
 

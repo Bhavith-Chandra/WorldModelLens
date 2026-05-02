@@ -127,6 +127,18 @@ class CapabilitiesAdapter(BaseModelAdapter):
         return h + z
 
 
+class HookPointsAdapter(nn.Module):
+    """Adapter exposing explicit semantic hook point names."""
+
+    def __init__(self, config):
+        super().__init__()
+        self.config = config
+
+    @property
+    def hook_point_names(self):
+        return ["encoder.out", "predictor.final"]
+
+
 def test_capabilities_fallback_for_legacy_adapter():
     """Legacy adapters without .capabilities should still work."""
     cfg = WorldModelConfig(
@@ -200,6 +212,19 @@ def test_call_decode_uses_both_adapter_styles():
     new_wm = HookedWorldModel(adapter=new_adapter, config=new_cfg)
     new_wm._call_decode(state, posterior)
     assert len(new_adapter.decode_calls[-1]) == 2
+
+
+def test_list_hookable_points_includes_wrapper_and_adapter_points():
+    cfg = WorldModelConfig(d_h=8, d_obs=4, has_decoder=False, has_value_head=False)
+    wm = HookedWorldModel(adapter=HookPointsAdapter(cfg), config=cfg)
+
+    points = wm.list_hookable_points()
+
+    assert "state" in points
+    assert "z_posterior" in points
+    assert "kv_cache" in points
+    assert "encoder.out" in points
+    assert "predictor.final" in points
 
 
 def test_run_with_cache_falls_back_to_predict_value_for_legacy_adapter():
