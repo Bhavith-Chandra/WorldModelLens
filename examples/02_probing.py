@@ -21,6 +21,7 @@ OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 from world_model_lens import HookedWorldModel, LatentProber, WorldModelConfig
 from world_model_lens.backends.dreamerv3 import DreamerV3Adapter
+from world_model_lens.envs import GymnasiumAdapter
 from world_model_lens.visualization import plot_probing_dashboard
 
 
@@ -29,7 +30,9 @@ def main():
     print("World Model Lens - Linear Probing Example")
     print("=" * 60)
 
-    cfg = WorldModelConfig(d_h=128, n_cat=16, n_cls=16, d_action=4, d_obs=12288)
+    # Pendulum-v1 obs is (cos θ, sin θ, θ̇) so d_obs=3 and d_action=1 — the DreamerV3Adapter
+    # will automatically use its MLP vector encoder instead of the CNN branch.
+    cfg = WorldModelConfig(d_h=128, n_cat=16, n_cls=16, d_action=1, d_obs=3)
     adapter = DreamerV3Adapter(cfg)
     wm = HookedWorldModel(adapter=adapter, config=cfg)
 
@@ -38,9 +41,22 @@ def main():
     all_activations = []
     all_labels = []
 
+    # Each episode resets with a different seed so the 5 trajectories have genuinely
+    # distinct starting states — probes trained on purely random noise would have no signal.
+    env = GymnasiumAdapter("Pendulum-v1")
     for ep in range(5):
-        obs_seq = torch.randn(20, 3, 64, 64)
-        action_seq = torch.randn(20, cfg.d_action)
+        obs, _ = env.reset(seed=ep)
+        obs_list, action_list = [], []
+        for _ in range(20):
+            action = env.action_space.sample()
+            obs_list.append(torch.from_numpy(obs).float())
+            action_list.append(torch.from_numpy(action).float())
+            result = env.step(action)
+            obs = result.observation
+            if result.done:
+                break
+        obs_seq = torch.stack(obs_list)
+        action_seq = torch.stack(action_list)
 
         traj, cache = wm.run_with_cache(obs_seq, action_seq)
 
@@ -51,6 +67,7 @@ def main():
         labels = np.random.randint(0, 3, size=len(z_flat))
         all_labels.append(labels)
 
+    env.close()
     activations = torch.cat(all_activations, dim=0)
     labels = np.concatenate(all_labels)
 
