@@ -27,7 +27,7 @@ class LatentTrajectoryPlotter:
 
         # Generate trajectory
         obs = torch.randn(20, 3, 64, 64)
-        traj, cache = world_model.run_with_cache(obs)
+        world_traj, traj, cache = world_model.run_with_cache(obs)
 
         # PCA projection
         pca = plotter.project_pca(traj, n_components=2)

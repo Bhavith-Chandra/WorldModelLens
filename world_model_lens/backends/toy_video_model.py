@@ -165,7 +165,7 @@ class ToyVideoAdapter(BaseModelAdapter):
         >>>
         >>> # Generate random video sequence
         >>> frames = torch.randn(10, 3, 64, 64)
-        >>> traj, cache = wm.run_with_cache(frames)
+        >>> world_traj, latent_traj, cache = wm.run_with_cache(frames)
     """
 
     def __init__(

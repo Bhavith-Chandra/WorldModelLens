@@ -71,7 +71,7 @@ class HookedRootModule(nn.Module):
                 self.setup_hooks()  # Must call to inject hooks
 
         wm = MyWorldModel(my_model)
-        cache = wm.run_with_cache(observations)
+        cache = wm.run_with_cache(observations)[-1]
 
         # Use standardized hook names
         z_hook = cache["dynamics.prior.hook_sample"]

@@ -58,7 +58,7 @@ def main():
     action_seq = torch.stack(action_list)
     print(f"\n[4] Collected {len(obs_list)} steps from Pendulum-v1: obs={obs_seq.shape}, actions={action_seq.shape}")
 
-    traj, cache = wm.run_with_cache(obs_seq, action_seq)
+    world_traj, latent_traj, cache = wm.run_with_cache(obs_seq, action_seq)
     print(f"\n[5] Forward pass complete!")
     print(f"    Trajectory length: {traj.length}")
     print(f"    Cache keys: {cache.component_names}")
@@ -69,7 +69,7 @@ def main():
     print(f"    h_t shape: {h_t.shape}")
     print(f"    z_posterior shape: {z_posterior.shape}")
 
-    imagined = wm.imagine(start_state=traj.states[5], horizon=20)
+    imagined_world, imagined_latent = wm.imagine(start_state=latent_traj.states[5], horizon=20)
     print(f"\n[7] Imagination complete: {imagined.length} steps")
 
     print("\n[8] Building visualization dashboard...")

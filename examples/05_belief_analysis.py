@@ -57,7 +57,7 @@ def main():
     obs_seq = torch.stack(obs_list)
     action_seq = torch.stack(action_list)
 
-    traj, cache = wm.run_with_cache(obs_seq, action_seq)
+    world_traj, traj, cache = wm.run_with_cache(obs_seq, action_seq)
 
     print("\n[2] Computing surprise timeline...")
 
@@ -96,7 +96,7 @@ def main():
 
     print("\n[5] Detecting hallucinations...")
 
-    imagined = wm.imagine(start_state=traj.states[0], horizon=20)
+    imagined_world, imagined = wm.imagine(start_state=traj.states[0], horizon=20)
 
     hallucination_result = analyzer.detect_hallucinations(
         real_traj=traj,

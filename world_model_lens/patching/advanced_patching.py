@@ -359,12 +359,12 @@ def estimate_planning_horizon(
     """
     from world_model_lens import HookedWorldModel
 
-    traj, cache = model.run_with_cache(obs_seq, torch.zeros(obs_seq.shape[0], 4))
+    traj, _, cache = model.run_with_cache(obs_seq, torch.zeros(obs_seq.shape[0], 4))
     start_state = traj.states[-1]
 
     fidelities = {}
     for h in range(1, min(max_horizon + 1, len(real_future_obs))):
-        imagined = model.imagine(start_state, horizon=h)
+        imagined, _ = model.imagine(start_state, horizon=h)
         imagined_obs = torch.stack(
             [s.obs_encoding for s in imagined.states if s.obs_encoding is not None], dim=0
         )
@@ -410,7 +410,7 @@ def belief_drift_rollout(
     kl_per_timestep = defaultdict(list)
 
     for _ in range(n_samples):
-        rollout = model.imagine(start_state, horizon=horizon)
+        rollout, _ = model.imagine(start_state, horizon=horizon)
 
         for i, state in enumerate(rollout.states):
             if hasattr(state, "kl") and state.kl is not None:

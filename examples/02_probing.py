@@ -58,7 +58,7 @@ def main():
         obs_seq = torch.stack(obs_list)
         action_seq = torch.stack(action_list)
 
-        traj, cache = wm.run_with_cache(obs_seq, action_seq)
+        world_traj, latent_traj, cache = wm.run_with_cache(obs_seq, action_seq)
 
         z_posterior = cache["z_posterior"]
         z_flat = z_posterior.flatten(1) if z_posterior.dim() > 2 else z_posterior

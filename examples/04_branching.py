@@ -51,7 +51,7 @@ def main():
     obs_seq = torch.stack(obs_list)
     action_seq = torch.stack(action_list)
 
-    real_traj, cache = wm.run_with_cache(obs_seq, action_seq)
+    real_world_traj, real_traj, cache = wm.run_with_cache(obs_seq, action_seq)
     print(f"    Real trajectory: {real_traj.length} steps")
 
     print("\n[2] Finding surprise peak for fork point...")
@@ -66,7 +66,7 @@ def main():
     branches = []
     for _ in range(5):
         actions = torch.randn(20, cfg.d_action)
-        imagined = wm.imagine(start_state=start_state, actions=actions, horizon=20)
+        _, imagined = wm.imagine(start_state=start_state, actions=actions, horizon=20)
         branches.append(imagined)
 
     print(f"    Created {len(branches)} branches")

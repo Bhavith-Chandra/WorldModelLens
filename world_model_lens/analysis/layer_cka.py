@@ -180,7 +180,9 @@ class LayerCKAAnalyzer:
 
         # Run forward pass with caching
         with torch.no_grad():
-            traj, cache = self.wm.run_with_cache(observations, names_filter=block_hook_patterns)
+            _, _, cache = self.wm.run_with_cache(
+                observations, names_filter=block_hook_patterns
+            )
 
         # Extract layer outputs from cache
         layer_outputs = {}

@@ -191,21 +191,23 @@ class TestHookedWorldModelWithVideo:
         """Test run_with_cache with video sequence."""
         frames = torch.randn(10, 3, 64, 64)
 
-        traj, cache = video_wm.run_with_cache(frames)
+        world_traj, latent_traj, cache = video_wm.run_with_cache(frames)
 
-        assert traj is not None
+        assert world_traj is not None
+        assert latent_traj is not None
         assert cache is not None
-        assert len(traj.states) == 10
+        assert len(world_traj.states) == 10
+        assert len(latent_traj.states) == 10
 
     def test_run_with_cache_no_actions(self, video_wm):
         """Test that run_with_cache works without actions."""
         frames = torch.randn(10, 3, 64, 64)
         actions = None
 
-        traj, cache = video_wm.run_with_cache(frames, actions=actions)
+        world_traj, _, cache = video_wm.run_with_cache(frames, actions=actions)
 
-        assert traj is not None
-        for state in traj.states:
+        assert world_traj is not None
+        for state in world_traj.states:
             assert state.action is None
 
 
@@ -239,11 +241,13 @@ class TestHookedWorldModelWithScientific:
         """Test run_with_cache with observation sequence."""
         observations = torch.randn(50, 10)
 
-        traj, cache = scientific_wm.run_with_cache(observations)
+        world_traj, latent_traj, cache = scientific_wm.run_with_cache(observations)
 
-        assert traj is not None
+        assert world_traj is not None
+        assert latent_traj is not None
         assert cache is not None
-        assert len(traj.states) == 50
+        assert len(world_traj.states) == 50
+        assert len(latent_traj.states) == 50
 
 
 class TestBeliefAnalyzerWithNonRL:
@@ -266,7 +270,7 @@ class TestBeliefAnalyzerWithNonRL:
     def test_surprise_timeline_video(self, video_wm):
         """Test surprise timeline with video model."""
         frames = torch.randn(20, 3, 64, 64)
-        traj, cache = video_wm.run_with_cache(frames)
+        _, _, cache = video_wm.run_with_cache(frames)
 
         analyzer = BeliefAnalyzer(video_wm)
         result = analyzer.surprise_timeline(cache)
@@ -278,7 +282,7 @@ class TestBeliefAnalyzerWithNonRL:
     def test_surprise_timeline_scientific(self, scientific_wm):
         """Test surprise timeline with scientific model."""
         observations = torch.randn(30, 10)
-        traj, cache = scientific_wm.run_with_cache(observations)
+        _, _, cache = scientific_wm.run_with_cache(observations)
 
         analyzer = BeliefAnalyzer(scientific_wm)
         result = analyzer.surprise_timeline(cache)
@@ -288,17 +292,17 @@ class TestBeliefAnalyzerWithNonRL:
     def test_reward_attribution_returns_unavailable(self, scientific_wm):
         """Test that reward attribution returns unavailable for non-RL models."""
         observations = torch.randn(20, 10)
-        traj, cache = scientific_wm.run_with_cache(observations)
+        world_traj, _, cache = scientific_wm.run_with_cache(observations)
 
         analyzer = BeliefAnalyzer(scientific_wm)
-        result = analyzer.reward_attribution(traj, cache)
+        result = analyzer.reward_attribution(world_traj, cache)
 
         assert result.is_available is False
 
     def test_value_analysis_returns_unavailable(self, scientific_wm):
         """Test that value analysis returns unavailable for non-RL models."""
         observations = torch.randn(20, 10)
-        traj, cache = scientific_wm.run_with_cache(observations)
+        _, _, cache = scientific_wm.run_with_cache(observations)
 
         analyzer = BeliefAnalyzer(scientific_wm)
         result = analyzer.value_analysis(cache)
@@ -319,7 +323,7 @@ class TestGeometryAnalyzerWithNonRL:
     def test_pca_projection(self, scientific_wm):
         """Test PCA projection with scientific model."""
         observations = torch.randn(30, 10)
-        traj, cache = scientific_wm.run_with_cache(observations)
+        _, _, cache = scientific_wm.run_with_cache(observations)
 
         analyzer = GeometryAnalyzer(scientific_wm)
         result = analyzer.pca_projection(cache)
@@ -330,7 +334,7 @@ class TestGeometryAnalyzerWithNonRL:
     def test_trajectory_metrics(self, scientific_wm):
         """Test trajectory metrics with scientific model."""
         observations = torch.randn(30, 10)
-        traj, cache = scientific_wm.run_with_cache(observations)
+        _, _, cache = scientific_wm.run_with_cache(observations)
 
         analyzer = GeometryAnalyzer(scientific_wm)
         result = analyzer.trajectory_metrics(cache)
@@ -342,7 +346,7 @@ class TestGeometryAnalyzerWithNonRL:
     def test_clustering(self, scientific_wm):
         """Test clustering with scientific model."""
         observations = torch.randn(30, 10)
-        traj, cache = scientific_wm.run_with_cache(observations)
+        _, _, cache = scientific_wm.run_with_cache(observations)
 
         analyzer = GeometryAnalyzer(scientific_wm)
         result = analyzer.clustering(cache, n_clusters=5)
@@ -354,7 +358,7 @@ class TestGeometryAnalyzerWithNonRL:
     def test_manifold_analysis(self, scientific_wm):
         """Test manifold analysis with scientific model."""
         observations = torch.randn(30, 10)
-        traj, cache = scientific_wm.run_with_cache(observations)
+        _, _, cache = scientific_wm.run_with_cache(observations)
 
         analyzer = GeometryAnalyzer(scientific_wm)
         result = analyzer.manifold_analysis(cache)
@@ -377,7 +381,7 @@ class TestTemporalMemoryProberWithNonRL:
     def test_memory_retention(self, scientific_wm):
         """Test memory retention analysis."""
         observations = torch.randn(50, 10)
-        traj, cache = scientific_wm.run_with_cache(observations)
+        _, _, cache = scientific_wm.run_with_cache(observations)
 
         prober = TemporalMemoryProber(scientific_wm)
         result = prober.memory_retention(cache)
@@ -389,7 +393,7 @@ class TestTemporalMemoryProberWithNonRL:
     def test_temporal_dependencies(self, scientific_wm):
         """Test temporal dependency analysis."""
         observations = torch.randn(30, 10)
-        traj, cache = scientific_wm.run_with_cache(observations)
+        _, _, cache = scientific_wm.run_with_cache(observations)
 
         prober = TemporalMemoryProber(scientific_wm)
         result = prober.temporal_dependencies(cache)
@@ -400,7 +404,7 @@ class TestTemporalMemoryProberWithNonRL:
     def test_sequential_patterns(self, scientific_wm):
         """Test sequential pattern detection."""
         observations = torch.randn(30, 10)
-        traj, cache = scientific_wm.run_with_cache(observations)
+        _, _, cache = scientific_wm.run_with_cache(observations)
 
         prober = TemporalMemoryProber(scientific_wm)
         result = prober.sequential_patterns(cache)
@@ -435,7 +439,7 @@ class TestScientificTrajectoryGenerators:
         traj = generate_lorenz_trajectory(n_steps=50)
         observations = traj
 
-        result_traj, cache = wm.run_with_cache(observations)
+        result_traj, _, cache = wm.run_with_cache(observations)
 
         assert result_traj is not None
         assert len(result_traj.states) == 50
@@ -454,15 +458,17 @@ class TestImaginationWithNonRL:
     def test_imagine_without_actions(self, scientific_wm):
         """Test imagination without actions (non-RL model)."""
         observations = torch.randn(10, 10)
-        traj, cache = scientific_wm.run_with_cache(observations)
+        world_traj, latent_traj, cache = scientific_wm.run_with_cache(observations)
 
-        start_state = traj.states[0]
-        imagined = scientific_wm.imagine(start_state, actions=None, horizon=20)
+        start_state = latent_traj.states[0]
+        imagined_world, imagined_latent = scientific_wm.imagine(start_state, actions=None, horizon=20)
 
-        assert imagined is not None
-        assert len(imagined.states) == 20
+        assert imagined_world is not None
+        assert imagined_latent is not None
+        assert len(imagined_world.states) == 20
+        assert len(imagined_latent.states) == 20
 
-        for state in imagined.states:
+        for state in imagined_world.states:
             assert state.action is None
 
 

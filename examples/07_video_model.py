@@ -71,7 +71,7 @@ def main():
     frames = torch.stack(frame_list)
     print(f"\n[4] Collected {T} rendered frames from CartPole-v1: {frames.shape}")
 
-    traj, cache = wm.run_with_cache(frames)
+    traj, latent_traj, cache = wm.run_with_cache(frames)
     print(f"\n[5] Forward pass complete!")
     print(f"    Trajectory length: {traj.length}")
     print(f"    Cache keys: {cache.component_names}")

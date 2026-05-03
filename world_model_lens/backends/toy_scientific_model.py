@@ -128,7 +128,7 @@ class ToyScientificAdapter(BaseModelAdapter):
         >>>
         >>> # Generate synthetic observations
         >>> observations = torch.randn(50, 10)  # 50 timesteps, 10D observations
-        >>> traj, cache = wm.run_with_cache(observations)
+        >>> world_traj, latent_traj, cache = wm.run_with_cache(observations)
     """
 
     def __init__(

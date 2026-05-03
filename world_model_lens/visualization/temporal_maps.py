@@ -97,7 +97,7 @@ class TemporalAttributionMap:
         T = observations.shape[0]
 
         # Get baseline
-        baseline_traj, _ = self.wm.run_with_cache(observations, actions)
+        baseline_traj, _, _ = self.wm.run_with_cache(observations, actions)
 
         influence = np.zeros((T, T))
 
@@ -109,7 +109,7 @@ class TemporalAttributionMap:
                 stage="post",
                 fn=_make_ablate_hook(source_t),
             )
-            intervened_traj = self.wm.run_with_hooks(
+            intervened_traj, _ = self.wm.run_with_hooks(
                 observations, actions, fwd_hooks=[hp],
             )
 
@@ -149,14 +149,14 @@ class TemporalAttributionMap:
         """
         T = observations.shape[0]
 
-        baseline_traj, _ = self.wm.run_with_cache(observations, actions)
+        baseline_traj, _, _ = self.wm.run_with_cache(observations, actions)
 
         hp = HookPoint(
             name="z_posterior",
             stage="post",
             fn=_make_ablate_hook(source_t),
         )
-        intervened_traj = self.wm.run_with_hooks(
+        intervened_traj, _ = self.wm.run_with_hooks(
             observations, actions, fwd_hooks=[hp],
         )
 
@@ -187,7 +187,7 @@ class TemporalAttributionMap:
         """
         T = observations.shape[0]
 
-        baseline_traj, _ = self.wm.run_with_cache(observations, actions)
+        baseline_traj, _, _ = self.wm.run_with_cache(observations, actions)
 
         target_baseline = self._extract_metric(baseline_traj, target_t, "state_norm")
 
@@ -199,7 +199,7 @@ class TemporalAttributionMap:
                 stage="post",
                 fn=_make_ablate_hook(source_t),
             )
-            intervened_traj = self.wm.run_with_hooks(
+            intervened_traj, _ = self.wm.run_with_hooks(
                 observations, actions, fwd_hooks=[hp],
             )
 
@@ -228,7 +228,7 @@ class TemporalAttributionMap:
         Returns:
             Dict mapping intermediate timesteps to their importance
         """
-        baseline_traj, _ = self.wm.run_with_cache(observations, actions)
+        baseline_traj, _, _ = self.wm.run_with_cache(observations, actions)
 
         baseline_target = self._extract_metric(baseline_traj, target_t, "state_norm")
 
@@ -241,7 +241,7 @@ class TemporalAttributionMap:
                 stage="post",
                 fn=_make_multi_ablate_hook(source_t, mid_t),
             )
-            intervened_traj = self.wm.run_with_hooks(
+            intervened_traj, _ = self.wm.run_with_hooks(
                 observations, actions, fwd_hooks=[hp],
             )
 

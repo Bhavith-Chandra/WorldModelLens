@@ -86,7 +86,7 @@ class SafetyAnalyzer:
             ]
         ).to(self.device)
 
-        traj, cache = self.wm.run_with_cache(observations=observations)
+        traj, _, cache = self.wm.run_with_cache(observations=observations)
 
         findings.extend(self._check_ood_detection(traj, cache))
         findings.extend(self._check_dynamics_stability(traj, cache))

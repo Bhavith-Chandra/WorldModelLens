@@ -112,7 +112,7 @@ def test_ijepa_hooked_integration():
     wm = HookedWorldModel(adapter=adapter, config=config)
     
     obs = torch.randn(1, 3, 224, 224)
-    traj, cache = wm.run_with_cache(obs)
+    _, _, cache = wm.run_with_cache(obs)
     
     # Verify target encoding appeared in cache (if implemented in HookedWorldModel)
     if "target_encoding" in cache.component_names:

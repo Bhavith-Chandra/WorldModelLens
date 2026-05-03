@@ -171,7 +171,7 @@ def compute_safety_score(
 
     for traj in test_trajectories:
         try:
-            imagined = wm.imagine(traj.states[-1], horizon=min(20, len(traj)))
+            _, imagined = wm.imagine(traj.states[-1], horizon=min(20, len(traj)))
 
             divergence = []
             for i in range(min(len(traj), len(imagined))):
@@ -256,7 +256,7 @@ class SafetyChecker:
 
         if imagined_traj is None:
             try:
-                imagined_traj = self.wm.imagine(traj.states[-1], horizon=len(traj))
+                _, imagined_traj = self.wm.imagine(traj.states[-1], horizon=len(traj))
             except Exception as e:
                 results["issues"].append(f"Could not generate imagination: {str(e)}")
                 return results

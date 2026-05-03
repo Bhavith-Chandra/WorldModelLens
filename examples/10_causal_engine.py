@@ -56,7 +56,7 @@ def main():
     engine = CounterfactualEngine(wm)
 
     # --- Baseline trajectory (no hooks)
-    baseline_traj, cache = wm.run_with_cache(obs_seq, action_seq)
+    baseline_traj, baseline_latent_traj, cache = wm.run_with_cache(obs_seq, action_seq)
     print(f"\nBaseline trajectory: {len(baseline_traj.states)} states")
     print(f"  State dim: {baseline_traj.states[0].state.shape}")
 

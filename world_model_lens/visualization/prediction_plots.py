@@ -29,13 +29,13 @@ class PredictionVisualizer:
 
         # Get predictions and ground truth
         obs = torch.randn(10, 3, 64, 64)
-        traj, cache = world_model.run_with_cache(obs)
+        world_traj, latent_traj, cache = world_model.run_with_cache(obs)
 
         # Compare reconstructions
-        comp = viz.compare_reconstructions(traj, cache, observations=obs)
+        comp = viz.compare_reconstructions(world_traj, cache, observations=obs)
 
         # Error heatmap
-        errors = viz.error_heatmap(traj, cache)
+        errors = viz.error_heatmap(world_traj, cache)
 
         # Per-frame comparison
         frames = viz.plot_frame_comparison(traj, cache, frame_idx=5)

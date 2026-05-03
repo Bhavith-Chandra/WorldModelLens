@@ -52,7 +52,7 @@ def main():
     obs_seq = torch.stack(obs_list)
     action_seq = torch.stack(action_list)
 
-    traj, cache = wm.run_with_cache(obs_seq, action_seq)
+    world_traj, traj, cache = wm.run_with_cache(obs_seq, action_seq)
 
     print("\n[2] Creating synthetic ground truth factors...")
 

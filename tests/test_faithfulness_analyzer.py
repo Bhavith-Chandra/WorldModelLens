@@ -249,7 +249,7 @@ class TestFaithfulnessAnalyzer:
         def predictor_fn(cache):
             return cache["reconstruction"]
 
-        _, cache = video_wm.run_with_cache(obs)
+        _, _, cache = video_wm.run_with_cache(obs)
         z = cache["z_posterior"]
         num_dims = z.shape[-1] if z is not None else 16
 
@@ -299,7 +299,7 @@ class TestAOPCIntegration:
 
         analyzer = FaithfulnessAnalyzer(wm)
 
-        _, cache = wm.run_with_cache(obs)
+        _, _, cache = wm.run_with_cache(obs)
 
         result = analyzer.aopc(obs, target_component="h", max_k=3)
         assert isinstance(result, AOPCResult)

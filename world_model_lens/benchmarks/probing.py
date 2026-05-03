@@ -49,7 +49,7 @@ class ProbingBenchmarkSuite:
         Returns:
             R² score for reward prediction.
         """
-        traj, cache = wm.run_with_cache(observations, actions)
+        _, _, cache = wm.run_with_cache(observations, actions)
 
         try:
             z_posterior = cache["z_posterior"]
@@ -90,7 +90,7 @@ class ProbingBenchmarkSuite:
         Returns:
             R² score for value prediction.
         """
-        traj, cache = wm.run_with_cache(observations, actions)
+        _, _, cache = wm.run_with_cache(observations, actions)
 
         try:
             h = cache["h"]
@@ -129,7 +129,7 @@ class ProbingBenchmarkSuite:
         Returns:
             Accuracy for action prediction.
         """
-        traj, cache = wm.run_with_cache(observations, actions)
+        _, _, cache = wm.run_with_cache(observations, actions)
 
         try:
             z_prior = cache["z_prior"]
@@ -175,7 +175,7 @@ class ProbingBenchmarkSuite:
         Returns:
             Accuracy for state classification.
         """
-        traj, cache = wm.run_with_cache(observations, actions)
+        _, _, cache = wm.run_with_cache(observations, actions)
 
         try:
             z_posterior = cache["z_posterior"]
@@ -214,7 +214,7 @@ class ProbingBenchmarkSuite:
         Returns:
             R² score for temporal position prediction.
         """
-        traj, cache = wm.run_with_cache(observations, actions)
+        _, _, cache = wm.run_with_cache(observations, actions)
 
         try:
             h = cache["h"]

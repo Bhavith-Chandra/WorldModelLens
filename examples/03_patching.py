@@ -54,12 +54,14 @@ def main():
     obs_seq = torch.stack(obs_list)
     action_seq = torch.stack(action_list)
 
-    clean_traj, clean_cache = wm.run_with_cache(obs_seq, action_seq)
+    clean_traj, clean_latent_traj, clean_cache = wm.run_with_cache(obs_seq, action_seq)
 
     obs_corrupted = obs_seq.clone()
     obs_corrupted[5:] = torch.randn_like(obs_corrupted[5:])
 
-    corrupted_traj, corrupted_cache = wm.run_with_cache(obs_corrupted, action_seq)
+    corrupted_traj, corrupted_latent_traj, corrupted_cache = wm.run_with_cache(
+        obs_corrupted, action_seq
+    )
 
     print(f"    Clean cache timesteps: {len(clean_cache.timesteps)}")
     print(f"    Corrupted cache timesteps: {len(corrupted_cache.timesteps)}")

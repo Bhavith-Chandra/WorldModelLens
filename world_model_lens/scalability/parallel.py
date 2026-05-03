@@ -92,7 +92,7 @@ def _worker_process_chunk(
         obs = traj_data["observation"]
         actions = traj_data.get("actions")
 
-        traj, cache = wm.run_with_cache(
+        _, _, cache = wm.run_with_cache(
             obs.to(device),
             actions.to(device) if actions is not None else None,
             names_filter=names_filter,
@@ -117,7 +117,7 @@ def _run_single_worker(
         obs = traj.h_sequence.to(device)
         actions = traj.actions.to(device) if traj.actions is not None else None
 
-        traj_out, cache = wm.run_with_cache(
+        _, _, cache = wm.run_with_cache(
             obs,
             actions,
             names_filter=names_filter,

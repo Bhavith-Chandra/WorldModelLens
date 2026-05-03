@@ -75,7 +75,7 @@ class WorldModelEnv:
         obs = wm_env.reset()
 
         # Use imagination for planning
-        imagined = wm.imagine(wm_env.current_state, horizon=10)
+        imagined_world, imagined_latent = wm.imagine(wm_env.current_state, horizon=10)
 
         # Take real step
         action = wm_env.action_space.sample()
@@ -197,7 +197,7 @@ class WorldModelEnv:
 
         if self._cache is not None:
             try:
-                traj, cache = self.wm.run_with_cache(
+                _, _, cache = self.wm.run_with_cache(
                     obs_tensor.unsqueeze(0),
                     actions=torch.tensor([action]).to(self._device).unsqueeze(0)
                     if action.shape
@@ -262,8 +262,12 @@ class WorldModelEnv:
         if actions is not None:
             actions = torch.from_numpy(actions).float().to(self._device)
 
-        trajectory = self.wm.imagine(
-            start_state=None,
+        from world_model_lens.core.latent_state import LatentState
+
+        start_state = LatentState(h_t=h.clone(), z_posterior=z.clone(), z_prior=z.clone())
+
+        _, trajectory = self.wm.imagine(
+            start_state=start_state,
             actions=actions,
             horizon=horizon,
         )
@@ -303,8 +307,12 @@ class WorldModelEnv:
             if actions is not None:
                 actions_tensor = torch.from_numpy(actions).float().to(self._device)
 
-                trajectory = self.wm.imagine(
-                    start_state=None,
+                from world_model_lens.core.latent_state import LatentState
+
+                start_state = LatentState(h_t=h.clone(), z_posterior=z.clone(), z_prior=z.clone())
+
+                _, trajectory = self.wm.imagine(
+                    start_state=start_state,
                     actions=actions_tensor,
                     horizon=horizon,
                 )

@@ -41,7 +41,7 @@ def main():
 
     # 3. Forward Pass (Real)
     print(f"\n[2/4] Running forward pass on {T} real observations...")
-    traj, cache = wm.run_with_cache(obs[:, 0])  # HookedWorldModel expects [T, ...]
+    traj, latent_traj, cache = wm.run_with_cache(obs[:, 0])  # HookedWorldModel expects [T, ...]
 
     print(f"[OK] Forward pass complete. Trajectory length: {len(traj.states)}")
 
@@ -53,7 +53,7 @@ def main():
     # 4. Imagination Rollout
     print("\n[3/4] Running 10-step imagination rollout from last real state...")
     start_state = traj.states[-1]
-    imagined = wm.imagine(start_state, horizon=10)
+    imagined, imagined_latent = wm.imagine(start_state, horizon=10)
 
     print(f"[OK] Imagination complete. Rollout length: {len(imagined.states)}")
 

@@ -91,7 +91,7 @@ examples/causal-analysis
 ### Forward pass with activation caching
 
 ```python
-traj, cache = wm.run_with_cache(obs_seq, action_seq)
+world_traj, latent_traj, cache = wm.run_with_cache(obs_seq, action_seq)
 h_t = cache["h", 0]
 z_t = cache["z_posterior", 0]
 ```
@@ -99,7 +99,7 @@ z_t = cache["z_posterior", 0]
 ### Imagination from an existing state
 
 ```python
-imagined = wm.imagine(start_state=traj.states[5], horizon=20)
+imagined_world, imagined_latent = wm.imagine(start_state=latent_traj.states[5], horizon=20)
 ```
 
 ### Analysis after collection
