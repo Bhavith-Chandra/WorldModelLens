@@ -1,3 +1,4 @@
+import os
 import torch
 import numpy as np
 from PIL import Image
@@ -5,14 +6,28 @@ import urllib.request
 import io
 from typing import Tuple, List
 
-def get_sample_image(url: str = "https://raw.githubusercontent.com/pytorch/hub/master/images/dog.jpg") -> Image.Image:
-    """Downloads a sample image from the web."""
+def get_sample_image(url_or_path: str = "https://raw.githubusercontent.com/pytorch/hub/master/images/dog.jpg") -> Image.Image:
+    """Loads a sample image from a URL or local path."""
+    # Check if it's a local file first
+    if os.path.exists(url_or_path):
+        try:
+            return Image.open(url_or_path).convert("RGB")
+        except Exception as e:
+            print(f"Failed to load local image {url_or_path}: {e}")
+
+    # Otherwise, download from URL
     try:
-        with urllib.request.urlopen(url) as response:
-            data = response.read()
-        return Image.open(io.BytesIO(data)).convert("RGB")
+        import requests
+        # Wikipedia and some other sites require a descriptive User-Agent to avoid 403 Forbidden
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
+        }
+        response = requests.get(url_or_path, headers=headers, timeout=10)
+        response.raise_for_status()
+        return Image.open(io.BytesIO(response.content)).convert("RGB")
     except Exception as e:
-        print(f"Failed to download image: {e}. Generating synthetic image.")
+        print(f"Failed to download image from {url_or_path}: {e}. Generating synthetic image.")
         # Fallback: Generate a synthetic image with some patterns
         img_array = np.zeros((224, 224, 3), dtype=np.uint8)
         for i in range(224):
