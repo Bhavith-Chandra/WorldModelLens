@@ -341,8 +341,8 @@ class CircuitBenchmark(SyntheticBenchmark):
         clean_obs = torch.randn(20, d_obs)
         corrupted_obs = clean_obs + 0.5
 
-        traj_clean, _, cache_clean = hooked_wm.run_with_cache(clean_obs)
-        traj_corrupt, _, cache_corrupt = hooked_wm.run_with_cache(corrupted_obs)
+        traj_clean, cache_clean = hooked_wm.run_with_cache(clean_obs)
+        traj_corrupt, cache_corrupt = hooked_wm.run_with_cache(corrupted_obs)
 
         patcher = TemporalPatcher(hooked_wm)
         components = ["pos", "action_pred", "reward"]

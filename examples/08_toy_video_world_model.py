@@ -89,7 +89,7 @@ def main():
     print(f"    Video shape: {frames.shape}")
 
     print("\n[3] Running forward pass with caching...")
-    traj, latent_traj, cache = wm.run_with_cache(frames)
+    traj, cache = wm.run_with_cache(frames)
     print(f"    Trajectory states: {len(traj.states)}")
     print(f"    Cache keys: {list(cache.keys())[:5]}...")
 
@@ -135,7 +135,7 @@ def main():
 
     print("\n[7] Testing imagination (no actions needed)...")
     start_state = traj.states[0]
-    imagined, imagined_latent = wm.imagine(start_state, actions=None, horizon=10)
+    imagined = wm.imagine(start_state, actions=None, horizon=10)
     print(f"    Imagined states: {len(imagined.states)}")
 
     print("\n[8] Testing RL-specific analysis (should be skipped)...")

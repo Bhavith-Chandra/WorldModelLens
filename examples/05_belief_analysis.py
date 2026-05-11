@@ -19,7 +19,6 @@ OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 from world_model_lens import HookedWorldModel, WorldModelConfig
 from world_model_lens.backends.dreamerv3 import DreamerV3Adapter
-from world_model_lens.envs import GymnasiumAdapter
 from world_model_lens.analysis.belief_analyzer import BeliefAnalyzer
 from world_model_lens.visualization import plot_belief_dashboard
 
@@ -29,8 +28,7 @@ def main():
     print("World Model Lens - Belief Analysis Example")
     print("=" * 60)
 
-    # Pendulum-v1 obs is (cos θ, sin θ, θ̇) — d_obs=3 and d_action=1 match its spaces exactly.
-    cfg = WorldModelConfig(d_h=128, n_cat=16, n_cls=16, d_action=1, d_obs=3)
+    cfg = WorldModelConfig(d_h=128, n_cat=16, n_cls=16, d_action=4, d_obs=12288)
     adapter = DreamerV3Adapter(cfg)
     wm = HookedWorldModel(adapter=adapter, config=cfg)
     analyzer = BeliefAnalyzer(wm)
@@ -40,24 +38,10 @@ def main():
 
     print("\n[1] Running forward pass...")
 
-    # Real observations let the belief analyzer detect genuine structure in the trajectory —
-    # surprise peaks and concept alignment are meaningless on i.i.d. Gaussian noise.
-    env = GymnasiumAdapter("Pendulum-v1")
-    obs, _ = env.reset(seed=42)
-    obs_list, action_list = [], []
-    for _ in range(T):
-        action = env.action_space.sample()
-        obs_list.append(torch.from_numpy(obs).float())
-        action_list.append(torch.from_numpy(action).float())
-        result = env.step(action)
-        obs = result.observation
-        if result.done:
-            break
-    env.close()
-    obs_seq = torch.stack(obs_list)
-    action_seq = torch.stack(action_list)
+    obs_seq = torch.randn(T, 3, 64, 64)
+    action_seq = torch.randn(T, cfg.d_action)
 
-    world_traj, traj, cache = wm.run_with_cache(obs_seq, action_seq)
+    traj, cache = wm.run_with_cache(obs_seq, action_seq)
 
     print("\n[2] Computing surprise timeline...")
 
@@ -96,7 +80,7 @@ def main():
 
     print("\n[5] Detecting hallucinations...")
 
-    imagined_world, imagined = wm.imagine(start_state=traj.states[0], horizon=20)
+    imagined = wm.imagine(start_state=traj.states[0], horizon=20)
 
     hallucination_result = analyzer.detect_hallucinations(
         real_traj=traj,

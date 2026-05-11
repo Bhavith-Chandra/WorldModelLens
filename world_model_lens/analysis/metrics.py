@@ -142,7 +142,7 @@ class LatentMetrics:
         Returns:
             MSE reconstruction error.
         """
-        _, _, cache = wm.run_with_cache(obs, actions)
+        traj, cache = wm.run_with_cache(obs, actions)
 
         try:
             recon = cache["reconstruction"]

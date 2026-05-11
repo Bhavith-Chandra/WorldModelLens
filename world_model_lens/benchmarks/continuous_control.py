@@ -108,7 +108,7 @@ class ContinuousControlBenchmark:
                 obs_short = traj[:horizon]
 
                 # Run model
-                pred_traj, _, _ = self.wm.run_with_cache(obs_short.unsqueeze(0))
+                pred_traj, _ = self.wm.run_with_cache(obs_short.unsqueeze(0))
 
                 # Compare final states
                 if len(pred_traj.states) > 0:

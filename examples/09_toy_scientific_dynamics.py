@@ -77,7 +77,7 @@ def main():
     print(f"    Z range: [{lorenz_traj[:, 2].min():.2f}, {lorenz_traj[:, 2].max():.2f}]")
 
     print("\n[3] Running forward pass with Lorenz trajectory...")
-    traj, latent_traj, cache = wm.run_with_cache(lorenz_traj)
+    traj, cache = wm.run_with_cache(lorenz_traj)
     print(f"    Trajectory states: {len(traj.states)}")
     print(f"    Cache keys: {list(cache.keys())[:5]}...")
 
@@ -133,7 +133,7 @@ def main():
 
     print("\n[7] Testing imagination (no actions needed)...")
     start_state = traj.states[0]
-    imagined, imagined_latent = wm.imagine(start_state, actions=None, horizon=20)
+    imagined = wm.imagine(start_state, actions=None, horizon=20)
     print(f"    Imagined states: {len(imagined.states)}")
 
     print("\n[8] Testing RL-specific analysis (should be skipped)...")
@@ -147,7 +147,7 @@ def main():
     pendulum_traj = generate_pendulum_trajectory(n_steps=100)
     # Pad pendulum trajectory to match model input dimension (3)
     pendulum_traj = torch.cat([pendulum_traj, torch.zeros(pendulum_traj.shape[0], 1)], dim=1)
-    traj2, latent_traj2, cache2 = wm.run_with_cache(pendulum_traj)
+    traj2, cache2 = wm.run_with_cache(pendulum_traj)
 
     surprise2 = belief_analyzer.surprise_timeline(cache2)
     print(f"    Pendulum mean surprise: {surprise2.mean_surprise:.4f}")

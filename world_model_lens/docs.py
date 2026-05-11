@@ -81,10 +81,10 @@ def quickstart():
     >>> # Run forward pass
     >>> import torch
     >>> obs = torch.randn(10, 3, 64, 64)
-    >>> world_traj, latent_traj, cache = wm.run_with_cache(obs)
+    >>> traj, cache = wm.run_with_cache(obs)
     >>>
     >>> # Analyze
-    >>> analysis = wm.analyze(world_traj, cache)
+    >>> analysis = wm.analyze(traj, cache)
     """
     pass
 

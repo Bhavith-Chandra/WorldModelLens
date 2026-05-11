@@ -138,7 +138,7 @@ class ContinualLearningAuditor:
         self.wm.adapter.load_state_dict(state_dict)
 
         # Run forward pass
-        trajectory, _, cache = self.wm.run_with_cache(observations, actions)
+        trajectory, cache = self.wm.run_with_cache(observations, actions)
 
         # Cache for later comparison
         self._cache_store[epoch] = (trajectory, cache)
@@ -385,7 +385,7 @@ class RepresentationTracker:
     ) -> None:
         """Capture full representation snapshot for an epoch."""
 
-        _, _, cache = self.wm.run_with_cache(observations)
+        traj, cache = self.wm.run_with_cache(observations)
 
         snapshot = {}
 

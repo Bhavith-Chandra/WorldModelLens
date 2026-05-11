@@ -245,7 +245,7 @@ class CounterfactualEngine:
             timestep=intervention.target_timestep,
         )
 
-        cf_traj, _ = self.wm.run_with_hooks(
+        cf_traj = self.wm.run_with_hooks(
             observations=observations,
             actions=actions,
             fwd_hooks=[hook],
@@ -301,7 +301,7 @@ class CounterfactualEngine:
             BranchTree with all branches
         """
         # Get original trajectory
-        original_traj, _, _ = self.wm.run_with_cache(observations, base_actions)
+        original_traj, _ = self.wm.run_with_cache(observations, base_actions)
 
         tree = BranchTree(root_trajectory=original_traj)
 
@@ -373,7 +373,7 @@ class CounterfactualEngine:
             timestep=intervention.target_timestep,
         )
 
-        cf_traj, _ = self.wm.run_with_hooks(
+        cf_traj = self.wm.run_with_hooks(
             dummy_obs,
             actions=None,
             fwd_hooks=[hook],
@@ -400,7 +400,7 @@ class CounterfactualEngine:
             Dict mapping intervention index to metrics
         """
         # Get baseline
-        baseline_traj, _, _ = self.wm.run_with_cache(observations, base_actions)
+        baseline_traj, _ = self.wm.run_with_cache(observations, base_actions)
         baseline_outcome = self._extract_outcome(baseline_traj, target_metric)
 
         results = {}
@@ -454,7 +454,7 @@ class CounterfactualEngine:
         Returns:
             Critical timestep index
         """
-        baseline_traj, _, _ = self.wm.run_with_cache(observations)
+        baseline_traj, _ = self.wm.run_with_cache(observations)
 
         best_timestep = 0
         best_divergence = float("inf")

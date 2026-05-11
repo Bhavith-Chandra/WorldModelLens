@@ -71,7 +71,7 @@ class HookedRootModule(nn.Module):
                 self.setup_hooks()  # Must call to inject hooks
 
         wm = MyWorldModel(my_model)
-        cache = wm.run_with_cache(observations)[-1]
+        cache = wm.run_with_cache(observations)
 
         # Use standardized hook names
         z_hook = cache["dynamics.prior.hook_sample"]
@@ -444,6 +444,23 @@ class HookedRootModule(nn.Module):
     def list_hooks(self) -> List[str]:
         """List all available hook points."""
         return list(self._hook_metadata.keys())
+
+    def list_hookable_points(self) -> List[str]:
+        """List all hookable module points discovered on this root module.
+
+        This is a clearer alias for ``list_hooks()`` that emphasizes these
+        names are valid hook targets rather than just metadata entries.
+        """
+        return self.list_hooks()
+
+    def list_hookable_modules(self) -> List[ModuleHookContext]:
+        """List structured metadata for all discovered hookable modules.
+
+        This returns the same registry as :meth:`list_hooks`, but preserves
+        the richer module metadata so callers can print or inspect hook sites
+        without re-deriving component type, layer index, or forward path.
+        """
+        return [self._hook_metadata[name] for name in self.list_hooks()]
 
     def list_components(self, component_type: Optional[str] = None) -> List[str]:
         """List components of a specific type.

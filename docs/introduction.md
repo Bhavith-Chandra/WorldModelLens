@@ -77,7 +77,7 @@ wm = HookedWorldModel(adapter=MyModel(config), config=config)
 
 ```python
 observations = torch.randn(20, 128)  # 20 timesteps
-world_traj, latent_traj, cache = wm.run_with_cache(observations)
+traj, cache = wm.run_with_cache(observations)
 
 # Inspect any activation at any timestep
 z_5 = cache["z_posterior", 5]

@@ -639,10 +639,7 @@ class HookedWorldModel:
         actions: Optional[torch.Tensor] = None,
         fwd_hooks: Optional[Union[List[HookPoint], Tuple[HookPoint, ...]]] = None,
         return_cache: bool = False,
-    ) -> Union[
-        Tuple[WorldTrajectory, LatentTrajectory],
-        Tuple[WorldTrajectory, LatentTrajectory, ActivationCache],
-    ]:
+    ) -> Union[WorldTrajectory, Tuple[WorldTrajectory, ActivationCache]]:
         """Run forward pass with temporary hooks.
 
         Hooks fire after each activation is computed but before it feeds
@@ -655,7 +652,7 @@ class HookedWorldModel:
             return_cache: If True, also return ActivationCache
 
         Returns:
-            (WorldTrajectory, LatentTrajectory), or that pair plus ActivationCache
+            WorldTrajectory, or (WorldTrajectory, ActivationCache) if return_cache
         """
         cache: ActivationCache | None = ActivationCache() if return_cache else None
 
@@ -663,11 +660,11 @@ class HookedWorldModel:
         # and cleaned up automatically, even if the forward pass raises.
         # coerce names_filter absent -> None handled by run_with_cache
         with self._hooks.temp_hooks(list(fwd_hooks) if fwd_hooks else []):
-            world_traj, latent_traj, cache = self.run_with_cache(observations, actions)
+            world_traj, _, cache = self.run_with_cache(observations, actions)
 
         if return_cache:
-            return world_traj, latent_traj, cache
-        return world_traj, latent_traj
+            return world_traj, cache
+        return world_traj
 
     def imagine(
         self,

@@ -16,7 +16,6 @@ import matplotlib.pyplot as plt
 
 from world_model_lens import HookedWorldModel, WorldModelConfig
 from world_model_lens.backends.dreamerv3 import DreamerV3Adapter
-from world_model_lens.envs import GymnasiumAdapter
 from world_model_lens.visualization import plot_branching_dashboard
 
 OUTPUT_DIR = pathlib.Path("assets/examples")
@@ -28,30 +27,16 @@ def main():
     print("World Model Lens - Imagination Branching Example")
     print("=" * 60)
 
-    # Pendulum-v1 has a 3-dim obs and 1-dim continuous action matching these config values.
-    cfg = WorldModelConfig(d_h=128, n_cat=16, n_cls=16, d_action=1, d_obs=3)
+    cfg = WorldModelConfig(d_h=128, n_cat=16, n_cls=16, d_action=4, d_obs=12288)
     adapter = DreamerV3Adapter(cfg)
     wm = HookedWorldModel(adapter=adapter, config=cfg)
 
     print("\n[1] Collecting real trajectory...")
 
-    # Collect a real trajectory to fork from — branching off random noise has no interpretive value.
-    env = GymnasiumAdapter("Pendulum-v1")
-    obs, _ = env.reset(seed=42)
-    obs_list, action_list = [], []
-    for _ in range(30):
-        action = env.action_space.sample()
-        obs_list.append(torch.from_numpy(obs).float())
-        action_list.append(torch.from_numpy(action).float())
-        result = env.step(action)
-        obs = result.observation
-        if result.done:
-            break
-    env.close()
-    obs_seq = torch.stack(obs_list)
-    action_seq = torch.stack(action_list)
+    obs_seq = torch.randn(30, 3, 64, 64)
+    action_seq = torch.randn(30, cfg.d_action)
 
-    real_world_traj, real_traj, cache = wm.run_with_cache(obs_seq, action_seq)
+    real_traj, cache = wm.run_with_cache(obs_seq, action_seq)
     print(f"    Real trajectory: {real_traj.length} steps")
 
     print("\n[2] Finding surprise peak for fork point...")
@@ -66,7 +51,7 @@ def main():
     branches = []
     for _ in range(5):
         actions = torch.randn(20, cfg.d_action)
-        _, imagined = wm.imagine(start_state=start_state, actions=actions, horizon=20)
+        imagined = wm.imagine(start_state=start_state, actions=actions, horizon=20)
         branches.append(imagined)
 
     print(f"    Created {len(branches)} branches")
