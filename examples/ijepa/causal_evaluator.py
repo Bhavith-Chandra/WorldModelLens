@@ -149,17 +149,22 @@ class IJEPAFaithfulnessEvaluator:
         return results
 
 def calculate_auc(values):
-    return np.trapezoid(values) / len(values) if values else 0
+    values = np.asarray(values)
+    if values.size == 0:
+        return 0
+    return np.trapezoid(values) / values.size
 
 def compute_monotonicity(values):
-    if len(values) < 2: return 0
+    values = np.asarray(values)
+    if values.size < 2: return 0
     diffs = np.diff(values)
     increasing = np.sum(diffs > 0) / len(diffs)
     decreasing = np.sum(diffs < 0) / len(diffs)
     return max(increasing, decreasing)
 
 def find_predictive_circuit(metric_values, threshold_ratio=0.9):
-    if not metric_values: return 0
+    metric_values = np.asarray(metric_values)
+    if metric_values.size == 0: return 0
     best_val = min(metric_values)
     target_val = best_val + (1 - threshold_ratio) * (metric_values[0] - best_val)
     for i, v in enumerate(metric_values):

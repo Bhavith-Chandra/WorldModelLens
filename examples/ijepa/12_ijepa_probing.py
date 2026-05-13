@@ -23,6 +23,7 @@ from utils import (
 )
 from world_model_lens import LatentProber
 from world_model_lens.analysis.metrics import DisentanglementEvaluationSuite
+from world_model_lens.probing.prober import ProbeResult
 
 try:
     from world_model_lens.probing.semantic_probes import IJEPASemanticAligner, SemanticProber
@@ -133,9 +134,32 @@ def _run_probes(
     for concept_name, probe_type in specs:
         if concept_name not in labels:
             continue
+        concept_labels = np.asarray(labels[concept_name])
+        if np.unique(concept_labels).size < 2:
+            results[concept_name] = ProbeResult(
+                accuracy=1.0,
+                r2=None,
+                direction=torch.zeros(activations.shape[-1]),
+                feature_weights=torch.zeros(activations.shape[-1]),
+                confusion_matrix=None,
+                concept_name=concept_name,
+                activation_name=component_name,
+                probe_type=probe_type,
+                training_samples=int(concept_labels.shape[0]),
+                test_samples=0,
+                cv_scores=[],
+                cv_mean=1.0,
+                cv_std=0.0,
+                regularization_alpha=1.0,
+            )
+            print(
+                f"  [probe] {component_name} / {concept_name}: skipped degenerate labels "
+                f"(single class)"
+            )
+            continue
         results[concept_name] = prober.train_probe(
             activations=activations,
-            labels=labels[concept_name],
+            labels=concept_labels,
             concept_name=concept_name,
             activation_name=component_name,
             probe_type=probe_type,
