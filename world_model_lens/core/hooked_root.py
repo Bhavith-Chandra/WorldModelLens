@@ -445,6 +445,23 @@ class HookedRootModule(nn.Module):
         """List all available hook points."""
         return list(self._hook_metadata.keys())
 
+    def list_hookable_points(self) -> List[str]:
+        """List all hookable module points discovered on this root module.
+
+        This is a clearer alias for ``list_hooks()`` that emphasizes these
+        names are valid hook targets rather than just metadata entries.
+        """
+        return self.list_hooks()
+
+    def list_hookable_modules(self) -> List[ModuleHookContext]:
+        """List structured metadata for all discovered hookable modules.
+
+        This returns the same registry as :meth:`list_hooks`, but preserves
+        the richer module metadata so callers can print or inspect hook sites
+        without re-deriving component type, layer index, or forward path.
+        """
+        return [self._hook_metadata[name] for name in self.list_hooks()]
+
     def list_components(self, component_type: Optional[str] = None) -> List[str]:
         """List components of a specific type.
 

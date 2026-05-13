@@ -19,13 +19,19 @@ TD-MPC2 (DMC / Meta-World / ManiSkill2 / MyoSuite)
 from __future__ import annotations
 
 import hashlib
+import math
+import shutil
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional
-import warnings
+from urllib.request import urlopen
+
 import torch
+
+from world_model_lens.backends.ijepa_adapter import IJEPAAdapter
 from world_model_lens.backends.iris import IRISAdapter
-from world_model_lens.core.config import WorldModelConfig
+from world_model_lens.core.config import WorldModelConfig, WorldModelFamily
 
 
 @dataclass
@@ -40,13 +46,16 @@ class ModelInfo:
     # HuggingFace coordinates; None means no public checkpoint exists yet.
     hf_repo_id: Optional[str] = None
     hf_filename: Optional[str] = None
+    source_url: Optional[str] = None
     sha256: Optional[str] = None
     notes: str = ""
 
     @property
     def is_downloadable(self) -> bool:
         """True when a real checkpoint is available and can be pulled."""
-        return not self.coming_soon and self.hf_repo_id is not None and self.hf_filename is not None
+        has_hf = self.hf_repo_id is not None and self.hf_filename is not None
+        has_url = self.source_url is not None
+        return not self.coming_soon and (has_hf or has_url)
 
 
 class ModelHub:
@@ -161,8 +170,34 @@ class ModelHub:
             notes="Official checkpoint. Source: eloialonso/iris on HuggingFace.",
         ),
         # ──────────────────────────────────────────────────────────────────────
-        # DreamerV3 — coming soon (JAX-only, no public PyTorch checkpoints)
+        # IJEPA — META checkpoints.
         # ──────────────────────────────────────────────────────────────────────
+        "ijepa-vit-h-in1k": ModelInfo(
+            name="ijepa-vit-h-in1k",
+            backend="ijepa",
+            environment="ImageNet-1K",
+            description="I-JEPA ViT-H/14 pretrained on ImageNet-1K for 300 epochs.",
+            coming_soon=False,
+            source_url="https://dl.fbaipublicfiles.com/ijepa/IN1K-vit.h.14-300e.pth.tar",
+            hf_filename="vith14_in1k_ep300.pth.tar",
+            notes=(
+                "Official Meta I-JEPA checkpoint. The downloaded file is a PyTorch "
+                "pickle even though it uses a .pth.tar suffix."
+            ),
+        ),
+        "ijepa-vit-h-in22k": ModelInfo(
+            name="ijepa-vit-h-in22k",
+            backend="ijepa",
+            environment="ImageNet-22K",
+            description="I-JEPA ViT-H/14 pretrained on ImageNet-22K for 900 epochs.",
+            coming_soon=False,
+            source_url="https://dl.fbaipublicfiles.com/ijepa/IN22K-vit.h.14-900e.pth.tar",
+            hf_filename="vith14_in22k_ep900.pth.tar",
+            notes=(
+                "Official Meta I-JEPA checkpoint. The downloaded file is a PyTorch "
+                "pickle even though it uses a .pth.tar suffix."
+            ),
+        ),
         "dreamerv3-atari-breakout": ModelInfo(
             name="dreamerv3-atari-breakout",
             backend="dreamerv3",
@@ -224,7 +259,7 @@ class ModelHub:
             environment="DeepMind Control/Humanoid",
             coming_soon=True,
             description="TD-MPC2 trained on DM Control Humanoid.",
-            notes=("Real checkpoints at nicklashansen/tdmpc2. " "Adapter key-mapping in progress."),
+            notes=("Real checkpoints at nicklashansen/tdmpc2. Adapter key-mapping in progress."),
         ),
     }
 
@@ -263,9 +298,7 @@ class ModelHub:
         """
         if name not in cls._MODELS:
             available = list(cls._MODELS.keys())
-            raise KeyError(
-                f"Model '{name}' not found in registry.\n" f"Available keys: {available}"
-            )
+            raise KeyError(f"Model '{name}' not found in registry.\nAvailable keys: {available}")
         return cls._MODELS[name]
 
     # ──────────────────────────────────────────────────────────────────────────
@@ -281,9 +314,8 @@ class ModelHub:
     ) -> str:
         """Download a checkpoint and return the local file path.
 
-        Uses ``huggingface_hub`` under the hood. Downloads are cached in the
-        HuggingFace Hub cache (``~/.cache/huggingface/``) by default, or in
-        ``cache_dir`` if provided.
+        Uses ``huggingface_hub`` for HF-backed models and direct HTTP
+        downloads for models registered with ``source_url``.
 
         Args:
             name: Registry key, e.g. ``"iris-atari-breakout"``.
@@ -307,6 +339,14 @@ class ModelHub:
                 f"To see currently downloadable models run:\n"
                 f"  ModelHub.list_available()\n"
                 f"  # or from the CLI: wml download --list"
+            )
+
+        if model_info.source_url is not None:
+            return cls._download_direct_url(
+                model_info.source_url,
+                model_info.hf_filename or Path(model_info.source_url).name,
+                cache_dir=cache_dir,
+                force=force,
             )
 
         if model_info.hf_repo_id is None or model_info.hf_filename is None:
@@ -383,6 +423,8 @@ class ModelHub:
 
         if model_info.backend == "iris":
             return cls._load_iris(local_path, device=device)
+        if model_info.backend == "ijepa":
+            return cls._load_ijepa(local_path, device=device)
 
         raise NotImplementedError(
             f"Adapter loading for backend '{model_info.backend}' is not yet wired up.\n"
@@ -418,6 +460,162 @@ class ModelHub:
     # ──────────────────────────────────────────────────────────────────────────
 
     @classmethod
+    def _download_direct_url(
+        cls,
+        url: str,
+        filename: str,
+        cache_dir: Optional[str] = None,
+        force: bool = False,
+    ) -> str:
+        """Download a checkpoint from a direct URL into the local cache."""
+        if cache_dir is None:
+            cache_base = Path.home() / ".cache" / "world_model_lens" / "models"
+        else:
+            cache_base = Path(cache_dir)
+        cache_base.mkdir(parents=True, exist_ok=True)
+
+        local_path = cache_base / filename
+        if local_path.exists() and not force:
+            return str(local_path)
+
+        try:
+            with urlopen(url) as response, open(local_path, "wb") as fh:
+                shutil.copyfileobj(response, fh)
+        except Exception as exc:
+            raise RuntimeError(f"Failed to download '{url}'. Cause: {exc}") from exc
+
+        return str(local_path)
+
+    @staticmethod
+    def _strip_module_prefix(state_dict: Dict[str, Any]) -> Dict[str, Any]:
+        """Remove a leading DDP 'module.' prefix from checkpoint keys."""
+        if not state_dict:
+            return state_dict
+        if not any(k.startswith("module.") for k in state_dict.keys()):
+            return state_dict
+        return {k[len("module.") :]: v for k, v in state_dict.items() if k.startswith("module.")}
+
+    @staticmethod
+    def _infer_tensor_dim(state_dict: Dict[str, Any], key: str, fallback: int) -> int:
+        tensor = state_dict.get(key)
+        if isinstance(tensor, torch.Tensor):
+            return int(tensor.shape[0])
+        return fallback
+
+    @classmethod
+    def _load_ijepa(cls, checkpoint_path: str, device: str = "cpu") -> Any:
+        """Load an official Meta I-JEPA checkpoint into our IJEPAAdapter."""
+        try:
+            ckpt = torch.load(checkpoint_path, map_location="cpu")
+        except Exception as exc:
+            raise RuntimeError(f"torch.load failed on '{checkpoint_path}'.\nCause: {exc}") from exc
+
+        if not isinstance(ckpt, dict):
+            raise RuntimeError(
+                f"Unexpected checkpoint type {type(ckpt).__name__}. "
+                "Expected a dict with encoder/target_encoder/predictor keys."
+            )
+
+        if "model" in ckpt and isinstance(ckpt["model"], dict):
+            ckpt = ckpt["model"]
+
+        encoder_state = ckpt.get("encoder") or ckpt.get("context_encoder")
+        target_state = ckpt.get("target_encoder") or encoder_state
+        predictor_state = ckpt.get("predictor")
+
+        if encoder_state is None or predictor_state is None:
+            raise RuntimeError(
+                "Unrecognised I-JEPA checkpoint layout. Expected top-level "
+                "'encoder' and 'predictor' state dicts."
+            )
+
+        encoder_state = cls._strip_module_prefix(encoder_state)
+        target_state = cls._strip_module_prefix(target_state or {})
+        predictor_state = cls._strip_module_prefix(predictor_state)
+
+        patch_weight = encoder_state.get("patch_embed.proj.weight")
+        if not isinstance(patch_weight, torch.Tensor):
+            raise RuntimeError(
+                "I-JEPA encoder checkpoint is missing 'patch_embed.proj.weight'. "
+                "Cannot infer model dimensions."
+            )
+
+        d_embed = int(patch_weight.shape[0])
+        patch_size = int(patch_weight.shape[2])
+        n_layers = sum(
+            1
+            for k in encoder_state.keys()
+            if k.startswith("blocks.") and k.endswith(".norm1.weight")
+        )
+        pos_embed = encoder_state.get("pos_embed")
+        img_size = 224
+        if isinstance(pos_embed, torch.Tensor) and pos_embed.dim() == 3:
+            num_patches = int(pos_embed.shape[1])
+            grid = int(math.sqrt(num_patches))
+            if grid * grid == num_patches:
+                img_size = grid * patch_size
+
+        predictor_embed = predictor_state.get("predictor_embed.weight")
+        predictor_embed_dim = (
+            int(predictor_embed.shape[0]) if isinstance(predictor_embed, torch.Tensor) else 384
+        )
+        predictor_depth = (
+            sum(
+                1
+                for k in predictor_state.keys()
+                if k.startswith("blocks.") and k.endswith(".norm1.weight")
+            )
+            or 4
+        )
+
+        cfg = WorldModelConfig(
+            d_h=d_embed,
+            d_obs=img_size * img_size * 3,
+            d_action=0,
+            encoder_type="vit",
+            backend="ijepa",
+            world_model_family=WorldModelFamily.JEPA,
+            n_layers=n_layers,
+            n_heads=16,
+            d_embed=d_embed,
+            patch_size=patch_size,
+            img_size=img_size,
+            predictor_embed_dim=predictor_embed_dim,
+            predictor_depth=predictor_depth,
+            predictor_heads=16,
+        )
+
+        adapter = IJEPAAdapter(cfg)
+        encoder_missing, encoder_unexpected = adapter.context_encoder.load_state_dict(
+            encoder_state, strict=False
+        )
+        target_missing, target_unexpected = adapter.target_encoder.load_state_dict(
+            target_state, strict=False
+        )
+        predictor_missing, predictor_unexpected = adapter.predictor.load_state_dict(
+            predictor_state, strict=False
+        )
+
+        if (
+            encoder_missing
+            or encoder_unexpected
+            or target_missing
+            or target_unexpected
+            or predictor_missing
+            or predictor_unexpected
+        ):
+            warnings.warn(
+                "I-JEPA checkpoint loaded with partial key mismatches; "
+                "the adapter is usable but some weights were not matched exactly.",
+                UserWarning,
+                stacklevel=2,
+            )
+
+        adapter = adapter.to(torch.device(device))
+        adapter.eval()
+        return adapter
+
+    @classmethod
     def _load_iris(cls, checkpoint_path: str, device: str = "cpu") -> Any:
         """Load an official IRIS checkpoint into our IRISAdapter.
 
@@ -443,7 +641,6 @@ class ModelHub:
         Returns:
             :class:`~world_model_lens.backends.iris.IRISAdapter` in eval mode.
         """
-        
 
         try:
             ckpt = torch.load(checkpoint_path, map_location=device)
@@ -502,9 +699,7 @@ class ModelHub:
         # Try a few common keys for d_model inference
         d_model = cls._infer_dim(wm_state, "transformer.blocks.0.ln1.weight", dim=0, fallback=None)
         if d_model is None:
-            d_model = (
-                cls._infer_dim(wm_state, "transformer.ln.weight", dim=0, fallback=256) or 256
-            )
+            d_model = cls._infer_dim(wm_state, "transformer.ln.weight", dim=0, fallback=256) or 256
 
         n_layers = (
             sum(
@@ -523,9 +718,7 @@ class ModelHub:
         )
         if emb0_vocab is None:
             emb0_vocab = (
-                cls._infer_dim(
-                    wm_state, "transformer.token_embedding.weight", dim=0, fallback=512
-                )
+                cls._infer_dim(wm_state, "transformer.token_embedding.weight", dim=0, fallback=512)
                 or 512
             )
 
@@ -562,9 +755,7 @@ class ModelHub:
         # IRISTransformer hardcodes Embedding(1024, d_model) but real checkpoints
         # may use a different sequence length (e.g. 340 for Pong).
         if max_seq_len != 1024 and hasattr(adapter.transformer, "pos_embedding"):
-            adapter.transformer.pos_embedding = torch.nn.Embedding(
-                int(max_seq_len), int(d_model)
-            )
+            adapter.transformer.pos_embedding = torch.nn.Embedding(int(max_seq_len), int(d_model))
 
         mapped, skipped = cls._map_iris_keys(wm_state, tokenizer_state)
 
@@ -587,8 +778,6 @@ class ModelHub:
                 safe_mapped[k] = v
 
         missing_keys, unexpected_keys = adapter.load_state_dict(safe_mapped, strict=False)
-
-        
 
         all_issues: List[str] = (
             skipped + shape_skipped + [f"unexpected:{k}" for k in unexpected_keys]

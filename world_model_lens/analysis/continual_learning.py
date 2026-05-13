@@ -8,6 +8,8 @@ Track representations across training epochs to detect:
 This is crucial for continual learning architectures like NEUROGENESIS™.
 """
 
+from __future__ import annotations
+
 import json
 from dataclasses import dataclass, field
 from datetime import datetime

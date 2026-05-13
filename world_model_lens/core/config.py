@@ -107,8 +107,9 @@ class WorldModelConfig:
     n_layers: int = 4
     n_heads: int = 4
     vocab_size: int = 512
-    
+
     # I-JEPA specific
+    img_size: int = 224
     patch_size: int = 16
     num_patches: int = 196
     embed_dim: int = 192

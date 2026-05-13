@@ -203,6 +203,12 @@ class DreamerV1Adapter(BaseModelAdapter):
             "posterior",
         ]
 
+    def list_hookable_points(self) -> List[str]:
+        """Return semantic hook names plus concrete module paths."""
+        points = list(self.hook_point_names)
+        points.extend(name for name, _ in self.named_modules() if name)
+        return list(dict.fromkeys(points))
+
     @property
     def world_model_family(self) -> WorldModelFamily:
         return WorldModelFamily.DREAMER

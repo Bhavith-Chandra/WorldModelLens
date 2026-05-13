@@ -7,8 +7,8 @@ from typing import Any, Optional, Set
 import torch
 from torch import Tensor
 
-from world_model_lens.core.hooks import HookContext
 from world_model_lens.core.activation_cache import ActivationCache
+from world_model_lens.core.hooks import HookContext
 from world_model_lens.core.latent_trajectory import LatentTrajectory
 from world_model_lens.core.types import WorldModelFamily
 
@@ -29,6 +29,27 @@ class ForwardRunner:
     def __init__(self, hooked: Any):
         self.hooked = hooked
 
+    @staticmethod
+    def _squeeze_singleton_batch(tensor: Tensor) -> Tensor:
+        """Match legacy cache/state shapes when JEPA runs on a single image."""
+        if tensor.dim() > 0 and tensor.shape[0] == 1:
+            return tensor.squeeze(0)
+        return tensor
+
+    def _cache_tensor(
+        self,
+        name: str,
+        t: int,
+        tensor: Tensor,
+        ctx: HookContext,
+        cache: Optional[ActivationCache],
+        names_filter: Optional[Set[str]],
+    ) -> Tensor:
+        manager = getattr(self.hooked, "_hook_cache_manager", None)
+        if manager is not None:
+            return manager.apply_and_cache(name, t, tensor, ctx, cache, names_filter)
+        return self.hooked._apply_and_cache(name, t, tensor, ctx, cache, names_filter)
+
     def run_forward(
         self,
         obs_seq: Tensor,
@@ -43,13 +64,15 @@ class ForwardRunner:
         states = []
 
         is_patch_axis = False
-        if hasattr(self.hooked, "_get_world_model_family"):
-            is_patch_axis = self.hooked._get_world_model_family() == WorldModelFamily.JEPA
-        elif hasattr(self.hooked, "config"):
-            backend = getattr(self.hooked.config, "backend", None)
+        if hasattr(self.hooked, "config"):
             family = getattr(self.hooked.config, "world_model_family", None)
-            is_patch_axis = backend == "ijepa" or family == WorldModelFamily.JEPA
-            
+            if isinstance(family, str):
+                family = family.upper()
+                if "JEPA" in family:
+                    family = WorldModelFamily.JEPA
+            if family == WorldModelFamily.JEPA:
+                is_patch_axis = True
+
         if is_patch_axis:
             return self._run_forward_patch_axis(obs_seq, cache, names_filter, ctx_mgr)
 
@@ -75,7 +98,9 @@ class ForwardRunner:
                 )
 
                 if manager is not None:
-                    adapter = getattr(self.hooked, "adapter", getattr(self.hooked, "_adapter", None))
+                    adapter = getattr(
+                        self.hooked, "adapter", getattr(self.hooked, "_adapter", None)
+                    )
                     obs_emb = adapter.encode(obs_seq[t])
                     obs_emb = manager.apply_and_cache(
                         "encoder.out", t, obs_emb, ctx, cache, names_filter
@@ -163,72 +188,141 @@ class ForwardRunner:
         ctx_mgr: Any,
     ) -> LatentTrajectory:
         """Patch-Axis Mode: executes spatial masking loop concurrently.
-        
+
         obs_batch is implicitly [B, C, H, W] for a single step (or unbatched).
         """
         states = []
         adapter = getattr(self.hooked, "adapter", getattr(self.hooked, "_adapter", None))
         manager = getattr(self.hooked, "_hook_cache_manager", None)
-        
+
         with ctx_mgr:
             # 1. Context Encoder
             context_latents, _ = adapter.encode(obs_batch)
+            ctx = HookContext(timestep=0, component="forward", trajectory_so_far=[])
             if manager is not None:
-                ctx = HookContext(timestep=0, component="forward", trajectory_so_far=[])
                 manager.apply_and_cache("encoder.out", 0, context_latents, ctx, cache, names_filter)
-            
+
+            # Cache context_encoder block outputs for layer analysis
+            if hasattr(adapter, "context_encoder") and manager is not None:
+                encoder = adapter.context_encoder
+                if hasattr(encoder, "forward_blocks_hooked"):
+                    # Need to re-run with hooks for block outputs
+                    # First do patch embedding and select patches
+                    patchified = encoder.patch_embed(obs_batch)
+                    if adapter.last_context_ids is not None:
+                        c_ids = adapter.last_context_ids
+                        if isinstance(c_ids, list):
+                            c_ids = torch.tensor(c_ids, device=patchified.device)
+                        x = patchified[:, c_ids, :]
+                        pos_embed = encoder.pos_embed[:, c_ids, :]
+                    else:
+                        x = patchified
+                        pos_embed = encoder.pos_embed
+                    x = x + pos_embed
+                    # Run with block output caching
+                    _, block_outputs = encoder.forward_blocks_hooked(x)
+                    for i, block_out in block_outputs.items():
+                        manager.apply_and_cache(
+                            f"encoder.blocks.{i}.hook_resid_post",
+                            0,
+                            block_out,
+                            ctx,
+                            cache,
+                            names_filter,
+                        )
+
             # 2. Target Encoder (EMA)
             target_reps = adapter.target_encode(obs_batch)
             if manager is not None:
-                manager.apply_and_cache("target_encoder.out", 0, target_reps, ctx, cache, names_filter)
-            
-            # 3. Predictor 
+                manager.apply_and_cache(
+                    "target_encoder.out", 0, target_reps, ctx, cache, names_filter
+                )
+
+            # Cache target_encoder block outputs (full image, all patches)
+            if hasattr(adapter, "target_encoder") and manager is not None:
+                encoder = adapter.target_encoder
+                if hasattr(encoder, "forward_blocks_hooked"):
+                    patchified = encoder.patch_embed(obs_batch)
+                    x = patchified + encoder.pos_embed
+                    _, block_outputs = encoder.forward_blocks_hooked(x)
+                    for i, block_out in block_outputs.items():
+                        manager.apply_and_cache(
+                            f"target_encoder.blocks.{i}.hook_resid_post",
+                            0,
+                            block_out,
+                            ctx,
+                            cache,
+                            names_filter,
+                        )
+
+            # 3. Predictor
             # IJEPA Predictor expects (context, context_ids, target_ids)
-            # In validation/inference without explicit masks, we can predict all targets 
+            # In validation/inference without explicit masks, we can predict all targets
             # or use the last generated masks from encode()
             c_ids = adapter.last_context_ids
             t_ids = adapter.last_target_ids
-            
+
             if c_ids is None or t_ids is None:
                 # Fallback if encode() didn't cache spatial masks
                 N = getattr(adapter.config, "num_patches", 196)
                 c_ids = list(range(int(N * 0.85)))
                 t_ids = list(range(int(N * 0.85), N))
-            
+
+            target_subset = target_reps[:, t_ids, :]
+
             # Predictor manual loop to expose predictor.layer_N
             context_inputs = adapter.predictor.predictor_embed(context_latents)
             context_inputs = context_inputs + adapter.predictor.pos_embed[:, c_ids, :]
-            
+
             B = obs_batch.shape[0] if obs_batch.dim() == 4 else 1
             target_tokens = adapter.predictor.mask_token.expand(B, len(t_ids), -1)
             target_inputs = target_tokens + adapter.predictor.pos_embed[:, t_ids, :]
-            
+
             x = torch.cat([context_inputs, target_inputs], dim=1)
-            
+
             # Manually run predictor layer loop to cache intermediate layer states
             for i, block in enumerate(adapter.predictor.blocks):
                 x = block(x)
                 if manager is not None:
                     manager.apply_and_cache(f"predictor.layer_{i}", 0, x, ctx, cache, names_filter)
-                    
+
             x = adapter.predictor.norm(x)
-            
+
             # Predictor final projections
-            target_preds = x[:, len(c_ids):, :]
+            target_preds = x[:, len(c_ids) :, :]
             target_preds = adapter.predictor.predictor_project_back(target_preds)
-            target_subset = target_reps[:, t_ids, :] if target_reps.dim() == 3 else target_reps[t_ids]
+            target_subset = (
+                target_reps[:, t_ids, :] if target_reps.dim() == 3 else target_reps[t_ids]
+            )
             if manager is not None:
-                manager.apply_and_cache("predictor.final", 0, target_preds, ctx, cache, names_filter)
+                manager.apply_and_cache(
+                    "predictor.final", 0, target_preds, ctx, cache, names_filter
+                )
                 manager.apply_and_cache("predictor_out", 0, target_preds, ctx, cache, names_filter)
-                manager.apply_and_cache("target_encoder_out", 0, target_subset, ctx, cache, names_filter)
+                manager.apply_and_cache(
+                    "target_encoder_out", 0, target_subset, ctx, cache, names_filter
+                )
+
+            # Preserve the legacy JEPA cache surface so existing analysis and
+            # visualization utilities keep working after wrapper dispatch changes.
+            compat_context = self._squeeze_singleton_batch(context_latents)
+            compat_targets = self._squeeze_singleton_batch(target_reps)
+            compat_preds = self._squeeze_singleton_batch(target_preds)
+            self._cache_tensor("z_posterior", 0, compat_context, ctx, cache, names_filter)
+            self._cache_tensor("z_prior", 0, compat_preds, ctx, cache, names_filter)
+            self._cache_tensor("target_encoding", 0, compat_targets, ctx, cache, names_filter)
 
             # 4. Map output to LatentTrajectory across the spatial sequence (patches as timesteps)
-            # We align patch sequences to timesteps. 
+            # We align patch sequences to timesteps.
             num_targets = len(t_ids)
             for t in range(num_targets):
                 h_patch = target_preds[:, t, :] if target_preds.dim() == 3 else target_preds[t]
-                target_patch = target_subset[:, t, :] if target_subset.dim() == 3 else target_subset[t]
-                
+                target_patch = (
+                    target_subset[:, t, :] if target_subset.dim() == 3 else target_subset[t]
+                )
+                h_patch = self._squeeze_singleton_batch(h_patch)
+                target_patch = self._squeeze_singleton_batch(target_patch)
+
                 state = self.hooked._build_state(
                     h=h_patch,
                     z_post_prob=target_patch,
@@ -241,13 +335,9 @@ class ForwardRunner:
                     value_val=None,
                 )
                 if hasattr(state, "metadata"):
-                    state.metadata.update(
-                        {
-                            "patch_id": int(t_ids[t]),
-                            "context_patch_ids": list(c_ids),
-                            "target_patch_ids": list(t_ids),
-                        }
-                    )
+                    state.metadata["patch_id"] = t_ids[t]
+                    state.metadata["context_patch_ids"] = list(c_ids)
+                    state.metadata["target_patch_ids"] = list(t_ids)
                 states.append(state)
 
         return LatentTrajectory(

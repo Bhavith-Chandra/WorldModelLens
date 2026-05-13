@@ -84,6 +84,47 @@ def test_ijepa_patch_axis_flow_and_keys():
         assert val.dim() == 3, f"Activation {key} should be [B, N, D]"
         assert val.shape[0] == 1, "Batch size should match input"
 
+
+
+def test_hooked_world_model_routes_jepa_through_forward_runner():
+    config = WorldModelConfig(
+        backend="ijepa",
+        world_model_family=WorldModelFamily.JEPA,
+        d_embed=128,
+        predictor_embed_dim=192,
+        predictor_depth=3,
+    )
+
+    adapter = IJEPAAdapter(config)
+    wm = HookedWorldModel(adapter=adapter, config=config)
+
+    obs = torch.randn(1, 3, 224, 224)
+    traj, cache = wm.run_with_cache(obs)
+
+    assert len(traj.states) > 0
+    assert traj.metadata["forward_runner"] is True
+    assert traj.metadata["world_model_family"] == WorldModelFamily.JEPA.name
+
+    assert "encoder.out" in cache.component_names
+    assert "target_encoder.out" in cache.component_names
+    assert "predictor.final" in cache.component_names
+    assert "predictor_out" in cache.component_names
+    assert "target_encoder_out" in cache.component_names
+
+    assert "z_posterior" in cache.component_names
+    assert "z_prior" in cache.component_names
+    assert "target_encoding" in cache.component_names
+
+    assert cache["target_encoding", 0].shape == (196, 128)
+    assert cache["z_posterior", 0].shape[1] == 128
+    assert cache["z_prior", 0].shape[1] == 128
+
+    first_state = traj.states[0]
+    assert first_state.state.shape == (128,)
+    assert first_state.metadata["patch_id"] in first_state.metadata["target_patch_ids"]
+    assert isinstance(first_state.metadata["z_posterior"], torch.Tensor)
+    assert isinstance(first_state.metadata["z_prior"], torch.Tensor)
+
 if __name__ == "__main__":
     # Allow running directly
     pytest.main([__file__])

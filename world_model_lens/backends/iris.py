@@ -284,7 +284,7 @@ class IRISAdapter(BaseModelAdapter):
         return h, z
 
     def to(self, device: torch.device, **kwargs: object) -> "IRISAdapter":  # type: ignore[override]
-        super().to(device)
+        super().to(device=device)
         self._device = device
         return self
 
@@ -295,3 +295,9 @@ class IRISAdapter(BaseModelAdapter):
     def train(self, mode: bool = True) -> "IRISAdapter":
         super().train(mode)
         return self
+
+    def list_hookable_points(self) -> List[str]:
+        """Return semantic hook names plus concrete module paths."""
+        points = list(self.hook_point_names)
+        points.extend(name for name, _ in self.named_modules() if name)
+        return list(dict.fromkeys(points))

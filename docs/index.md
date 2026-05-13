@@ -9,6 +9,7 @@ Backend-agnostic interpretability and observability for world models.
 introduction
 getting-started
 installation
+faithfulness
 examples
 glossary
 api/index

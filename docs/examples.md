@@ -1,6 +1,6 @@
 # Examples
 
-World Model Lens includes 10 example scripts covering the main workflows: collecting activations, probing representations, patching components, branching imagined futures, and running causal comparisons.
+World Model Lens includes 12 example scripts covering the main workflows: collecting activations, probing representations, patching components, branching imagined futures, running causal comparisons, and faithfulness analysis.
 
 ## How To Use This Section
 
@@ -20,6 +20,7 @@ All examples live in the `examples/` directory.
 python examples/01_quickstart.py
 python examples/02_probing.py
 python examples/10_causal_engine.py
+python examples/12_aopc_example.py
 ```
 
 From the `examples/` directory itself:
@@ -27,6 +28,7 @@ From the `examples/` directory itself:
 ```bash
 cd examples
 python 01_quickstart.py
+python 12_aopc_example.py
 ```
 
 ## Example Guides
@@ -56,6 +58,7 @@ examples/causal-analysis
 | 09 | `examples/09_toy_scientific_dynamics.py` | Scientific dynamics | Intermediate | None | `ToyScientificAdapter`, geometry + belief tools | Surprise and geometry comparisons across systems |
 | 10 | `examples/10_causal_engine.py` | Counterfactual engine | Advanced | None | `CounterfactualEngine`, `Intervention` | Intervention tables and divergence metrics |
 | 11 | `examples/11_unified_disentanglement.py` | Multi-component evaluation | Intermediate | None | `DisentanglementEvaluationSuite` | Unified MIG/DCI/SAP across context_encoder, predictor, target_encoder |
+| 12 | `examples/12_aopc_example.py` | AOPC Faithfulness Analysis | Intermediate | None | `FaithfulnessAnalyzer` | AOPC scores and perturbation curves |
 
 ## Suggested Paths
 
@@ -81,6 +84,7 @@ examples/causal-analysis
 
 - Example 05: surprise, saliency, hallucination
 - Example 10: intervention comparison and divergence tracing
+- Example 12: faithfulness analysis
 
 ## Common Patterns Across Examples
 

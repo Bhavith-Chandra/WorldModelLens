@@ -4,25 +4,25 @@ HookedWorldModel is backend-agnostic and works with ANY world model adapter.
 It provides interpretability tools without assuming RL-specific features.
 """
 
-from typing import Any, Callable, Dict, List, Optional, Tuple, TYPE_CHECKING, Union
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple, Union
 
 import torch
 
 if TYPE_CHECKING:
-    from world_model_lens.core.world_state import WorldState, WorldTrajectory, WorldDynamics
-    from world_model_lens.core.world_trajectory import WorldTrajectory
     from world_model_lens.core.config import WorldModelConfig
     from world_model_lens.core.latent_state import LatentState
+    from world_model_lens.core.world_state import WorldDynamics, WorldState, WorldTrajectory
+    from world_model_lens.core.world_trajectory import WorldTrajectory
 
-from world_model_lens.core.hooks import HookContext, HookPoint, HookRegistry
-from world_model_lens.core.activation_cache import ActivationCache
-from world_model_lens.core.world_state import WorldState
-from world_model_lens.core.world_trajectory import WorldTrajectory
 from world_model_lens.backends.base_adapter import WorldModelCapabilities
-from world_model_lens.core.hook_cache import HookCacheManager
+from world_model_lens.core.activation_cache import ActivationCache
 from world_model_lens.core.forward_runner import ForwardRunner
+from world_model_lens.core.hook_cache import HookCacheManager
+from world_model_lens.core.hooks import HookContext, HookPoint, HookRegistry
 from world_model_lens.core.latent_trajectory import LatentTrajectory
 from world_model_lens.core.types import WorldModelFamily
+from world_model_lens.core.world_state import WorldState
+from world_model_lens.core.world_trajectory import WorldTrajectory
 
 
 class HookedWorldModel:
@@ -192,67 +192,70 @@ class HookedWorldModel:
         )
 
     def _get_world_model_family(self) -> Optional[WorldModelFamily]:
-        """Infer the active world-model family, preferring backend-specific overrides."""
-        config = getattr(self, "config", None) or getattr(self.adapter, "config", None)
-        backend = getattr(config, "backend", None)
-        if backend == "ijepa":
-            return WorldModelFamily.JEPA
-        return getattr(config, "world_model_family", None)
+        """Resolve world-model family from wrapper config first, then adapter config."""
+        family = getattr(self.config, "world_model_family", None)
+        if family is not None:
+            return family
+        return getattr(getattr(self.adapter, "config", None), "world_model_family", None)
 
     @staticmethod
     def _normalize_world_state_tensor(tensor: torch.Tensor) -> torch.Tensor:
-        """Squeeze single-item batch dimensions for trajectory/state conversion."""
-        if tensor.dim() > 1 and tensor.shape[0] == 1:
+        """Keep JEPA patch states compact when converting to WorldTrajectory."""
+        if tensor.dim() > 0 and tensor.shape[0] == 1:
             return tensor.squeeze(0)
         return tensor
 
     def _latent_traj_to_world_traj(self, latent_traj: LatentTrajectory) -> WorldTrajectory:
-        """Convert a runner-produced LatentTrajectory into the public WorldTrajectory API."""
+        """Convert ForwardRunner output into the public WorldTrajectory API."""
+        states_out = []
         family = self._get_world_model_family()
-        states: list[WorldState] = []
-
-        def _clone_optional(value: Any) -> Any:
-            if isinstance(value, torch.Tensor):
-                return self._normalize_world_state_tensor(value.detach().clone())
-            return value
-
-        for idx, latent_state in enumerate(latent_traj.states):
+        for i, latent_state in enumerate(latent_traj.states):
             h_t = getattr(latent_state, "h_t", None)
             if not isinstance(h_t, torch.Tensor):
                 raise TypeError(
-                    "ForwardRunner produced a latent state without a valid tensor h_t; "
-                    "cannot convert it into WorldState."
+                    "ForwardRunner produced a latent state without a tensor h_t; "
+                    f"got {type(h_t).__name__} at index {i}."
                 )
 
+            obs_encoding = getattr(latent_state, "obs_encoding", None)
+            if isinstance(obs_encoding, torch.Tensor):
+                obs_encoding = self._normalize_world_state_tensor(obs_encoding.detach().clone())
+
             metadata = dict(getattr(latent_state, "metadata", {}) or {})
-            metadata["forward_runner"] = True
-            metadata["world_model_family"] = family.name if family is not None else None
-
-            z_post = getattr(latent_state, "z_posterior", None)
+            z_posterior = getattr(latent_state, "z_posterior", None)
             z_prior = getattr(latent_state, "z_prior", None)
-            if isinstance(z_post, torch.Tensor):
-                metadata["z_posterior"] = _clone_optional(z_post)
+            if isinstance(z_posterior, torch.Tensor):
+                metadata.setdefault(
+                    "z_posterior",
+                    self._normalize_world_state_tensor(z_posterior.detach().clone()),
+                )
             if isinstance(z_prior, torch.Tensor):
-                metadata["z_prior"] = _clone_optional(z_prior)
+                metadata.setdefault(
+                    "z_prior",
+                    self._normalize_world_state_tensor(z_prior.detach().clone()),
+                )
 
-            states.append(
+            states_out.append(
                 WorldState(
                     state=self._normalize_world_state_tensor(h_t.detach().clone()),
-                    timestep=int(getattr(latent_state, "timestep", idx)),
-                    action=_clone_optional(getattr(latent_state, "action", None)),
-                    reward_pred=_clone_optional(getattr(latent_state, "reward_pred", None)),
-                    value_pred=_clone_optional(getattr(latent_state, "value_pred", None)),
-                    obs_encoding=_clone_optional(getattr(latent_state, "obs_encoding", None)),
+                    timestep=getattr(latent_state, "timestep", i),
+                    action=getattr(latent_state, "action", None),
+                    action_source=None,
+                    reward_pred=getattr(latent_state, "reward_pred", None),
+                    value_pred=getattr(latent_state, "value_pred", None),
+                    obs_encoding=obs_encoding,
                     metadata=metadata,
                 )
             )
 
         return WorldTrajectory(
-            states=states,
-            source="real",
+            states=states_out,
+            name=self.name,
+            source="imagined" if latent_traj.imagined else "real",
             metadata={
                 "forward_runner": True,
-                "world_model_family": family.name if family is not None else None,
+                "world_model_family": family.name if hasattr(family, "name") else family,
+                "latent_episode_id": latent_traj.episode_id,
             },
         )
 
@@ -325,7 +328,41 @@ class HookedWorldModel:
             runner = ForwardRunner(self)
             action_seq = actions
             if action_seq is None:
-                action_seq = torch.zeros((T, 1), device=observations.device, dtype=observations.dtype)
+                action_seq = torch.zeros(
+                    (T, 1), device=observations.device, dtype=observations.dtype
+                )
+            latent_traj = runner.run_forward(
+                observations,
+                action_seq,
+                cache,
+                names_filter,
+                no_grad=True,
+            )
+            traj = self._latent_traj_to_world_traj(latent_traj)
+            if device:
+                traj = traj.to_device(device)
+                cache = cache.to_device(device)
+            return traj, cache
+
+        # Handle both enum and string for world model family
+        family = self._get_world_model_family()
+        if isinstance(family, str):
+            # Handle various string formats: 'ijepa', 'jea', etc.
+            family_upper = family.upper()
+            if "JEPA" in family_upper:
+                family = WorldModelFamily.JEPA
+            else:
+                try:
+                    family = WorldModelFamily(family_upper)
+                except ValueError:
+                    family = None
+        # else: family is already an enum or None
+
+        if family == WorldModelFamily.JEPA:
+            runner = ForwardRunner(self)
+            action_seq = actions
+            if action_seq is None:
+                action_seq = torch.zeros((T, 1), device=observations.device)
             latent_traj = runner.run_forward(
                 observations,
                 action_seq,
@@ -362,6 +399,12 @@ class HookedWorldModel:
             hook_ctx = HookContext(timestep=t, component="state", trajectory_so_far=states)
             # apply hooks and cache via central helper
             state = self._apply_and_cache("state", t, state, hook_ctx, cache, names_filter)
+
+            # Sync hooks to adapter for internal component hooking
+            if hasattr(self.adapter, "hooks"):
+                self.adapter.hooks = self._hooks
+            if hasattr(self.adapter, "current_timestep"):
+                self.adapter.current_timestep = t
 
             posterior, obs_encoding = self.adapter.encode(
                 obs.unsqueeze(0), state.unsqueeze(0) if state.dim() == 1 else state
@@ -775,6 +818,66 @@ class HookedWorldModel:
     def hook_registry(self) -> HookRegistry:
         """Access the hook registry."""
         return self._hooks
+
+    def list_hookable_points(self) -> List[str]:
+        """List hook targets exposed by the wrapper and its adapter.
+
+        The wrapper always exposes its timestep-level hook points. If the
+        adapter also advertises hook points, they are merged in so callers can
+        discover both the public wrapper API and adapter-specific sites.
+        """
+        points = [
+            "state",
+            "h",
+            "z_posterior",
+            "z_prior",
+            "observation",
+            "target_encoding",
+            "kl",
+            "reconstruction",
+            "reward",
+            "value",
+            "action",
+            "transition",
+            "kv_cache",
+        ]
+
+        adapter = getattr(self, "adapter", None)
+        if adapter is None:
+            return points
+
+        adapter_points: List[str] = []
+
+        list_hookable_points = getattr(adapter, "list_hookable_points", None)
+        if callable(list_hookable_points):
+            try:
+                adapter_points.extend(list(list_hookable_points()))
+            except Exception:
+                pass
+
+        hook_point_names = getattr(adapter, "hook_point_names", None)
+        if hook_point_names is not None:
+            try:
+                adapter_points.extend(list(hook_point_names))
+            except TypeError:
+                pass
+
+        if self._get_world_model_family() == WorldModelFamily.JEPA:
+            predictor = getattr(adapter, "predictor", None)
+            blocks = getattr(predictor, "blocks", None)
+            if blocks is not None:
+                adapter_points.extend([f"predictor.layer_{i}" for i in range(len(blocks))])
+            adapter_points.extend(
+                [
+                    "encoder.out",
+                    "target_encoder.out",
+                    "predictor.final",
+                    "predictor_out",
+                    "target_encoder_out",
+                ]
+            )
+
+        return list(dict.fromkeys(points + adapter_points))
 
     @property
     def capabilities(self) -> WorldModelCapabilities:
