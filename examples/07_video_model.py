@@ -11,12 +11,14 @@ A video prediction model:
 """
 
 import torch
+import torch.nn.functional as F
 import numpy as np
 
 from world_model_lens import HookedWorldModel
 #from world_model_lens.core.config import WorldModelConfig
 from world_model_lens.backends.generic_adapter import WorldModelConfig
 from world_model_lens.backends.video_adapter import VideoWorldModelAdapter
+from world_model_lens.envs import GymnasiumAdapter
 from world_model_lens.visualization import plot_video_model_dashboard
 import matplotlib.pyplot as plt
 import pathlib
@@ -54,8 +56,20 @@ def main():
     print("\n[3] Wrapped in HookedWorldModel")
 
     T = 10
-    frames = torch.randn(T, *frame_shape)
-    print(f"\n[4] Created video sequence: {frames.shape}")
+    # Render real CartPole frames — render_mode="rgb_array" returns (H, W, 3) uint8 numpy
+    # arrays that we convert to (3, 64, 64) float tensors via channel-first transpose and resize.
+    env = GymnasiumAdapter("CartPole-v1", render_mode="rgb_array")
+    env.reset(seed=42)
+    frame_list = []
+    for _ in range(T):
+        raw = env.render()
+        frame_t = torch.from_numpy(raw).permute(2, 0, 1).float() / 255.0
+        frame_t = F.interpolate(frame_t.unsqueeze(0), size=(64, 64), mode="bilinear", align_corners=False).squeeze(0)
+        frame_list.append(frame_t)
+        env.step(env.action_space.sample())
+    env.close()
+    frames = torch.stack(frame_list)
+    print(f"\n[4] Collected {T} rendered frames from CartPole-v1: {frames.shape}")
 
     traj, cache = wm.run_with_cache(frames)
     print(f"\n[5] Forward pass complete!")
