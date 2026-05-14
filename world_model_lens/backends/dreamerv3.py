@@ -386,7 +386,7 @@ class DreamerV3Adapter(BaseModelAdapter):
         return z_onehot
 
     def to(self, device: torch.device) -> "DreamerV3Adapter":
-        super().to(device)
+        super().to(device=device)
         self._device = device
         return self
 
