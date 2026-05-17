@@ -101,8 +101,9 @@ def load_ijepa_world_model(
     state_dict = _load_checkpoint_state_dict(checkpoint)
     adapter.load_state_dict(state_dict, strict=False)
 
-    if device is not None:
-        adapter = adapter.to(torch.device(device))
+    if device is None:
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+    adapter = adapter.to(device=torch.device(device))
 
     wm = HookedWorldModel(adapter=adapter, config=config, name="ijepa_checkpoint")
     adapter.eval()
@@ -154,6 +155,12 @@ def get_sample_image(
                     return image.resize((image_size, image_size)), metadata
 
         raise FileNotFoundError(f"No image files found under ImageNet root: {root}")
+
+    local_dog = EXAMPLE_DIR / "dog.jpg"
+    if local_dog.exists():
+        image = Image.open(local_dog).convert("RGB")
+        metadata.update({"source": "dog.jpg", "path": str(local_dog)})
+        return image.resize((image_size, image_size)), metadata
 
     grid = np.linspace(0, 255, image_size, dtype=np.uint8)
     xv, yv = np.meshgrid(grid, grid)

@@ -7,9 +7,11 @@ from image_utils import get_sample_image, preprocess_image
 import time
 import os
 
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
 def train_ijepa_mini(epochs=300, steps_per_epoch=4, lr=1e-4):
-    print("Starting I-JEPA Mini-Training with official IJEPAAdapter...")
-    
+    print(f"Starting I-JEPA Mini-Training on {DEVICE}...")
+
     config = WorldModelConfig(
         backend="ijepa",
         d_embed=192,
@@ -19,18 +21,18 @@ def train_ijepa_mini(epochs=300, steps_per_epoch=4, lr=1e-4):
         predictor_depth=4,
         predictor_heads=6
     )
-    
-    model = IJEPAAdapter(config)
+
+    model = IJEPAAdapter(config).to(device=DEVICE)
     model.train()
-    
+
     # We only optimize the context encoder and predictor
     # target_encoder is updated via EMA from context_encoder
     params = list(model.context_encoder.parameters()) + list(model.predictor.parameters())
     optimizer = optim.Adam(params, lr=lr)
-    
+
     # We'll use a few "scenes" for training
     raw_img = get_sample_image()
-    img_tensor = preprocess_image(raw_img)
+    img_tensor = preprocess_image(raw_img).to(DEVICE)
     
     losses = []
     start_time = time.time()

@@ -256,19 +256,23 @@ def plot_faithfulness(results_list, metric="mse"):
 
 if __name__ == "__main__":
     import os
-    
+
+    DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Running on {DEVICE}")
+
     config = WorldModelConfig(backend="ijepa", d_embed=192, n_layers=6, n_heads=3, predictor_embed_dim=384)
     model = IJEPAAdapter(config)
-    
+
     checkpoint_path = os.path.join(os.path.dirname(__file__), "ijepa_mini.pth")
     if os.path.exists(checkpoint_path):
         print(f"Loading trained weights from {checkpoint_path}...")
         state_dict = torch.load(checkpoint_path, weights_only=True)
         model.load_state_dict(state_dict, strict=False)
+    model = model.to(device=DEVICE)
     model.eval()
-    
+
     raw_img = get_sample_image()
-    img_tensor = preprocess_image(raw_img)
+    img_tensor = preprocess_image(raw_img).to(DEVICE)
     
     evaluator = IJEPAFaithfulnessEvaluator(model, img_tensor)
     

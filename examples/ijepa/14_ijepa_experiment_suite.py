@@ -34,7 +34,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--image", type=str, default=None, help="Optional image path.")
     parser.add_argument("--imagenet-root", type=str, default=None, help="Optional ImageNet root.")
-    parser.add_argument("--device", type=str, default="cpu", help="Torch device.")
+    parser.add_argument("--device", type=str, default=None, help="Torch device (default: auto-detect cuda).")
     parser.add_argument(
         "--output-dir", type=str, default=None, help="Optional output directory override."
     )

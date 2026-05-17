@@ -9,6 +9,8 @@ from world_model_lens.backends.ijepa_adapter import IJEPAAdapter
 from image_utils import get_sample_image, preprocess_image, get_ijepa_masks
 from world_model_lens.core.config import WorldModelConfig
 
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
 config = WorldModelConfig(
     backend="ijepa",
     d_embed=192,
@@ -29,10 +31,10 @@ def animate_ijepa_progressive(seed: int = 42):
     np.random.seed(seed)
     
     # 1. Setup Data & Model
-    print("Loading image and model...")
+    print(f"Loading image and model on {DEVICE}...")
     raw_img = get_sample_image()
-    img_tensor = preprocess_image(raw_img)
-    model = IJEPAAdapter(config)
+    img_tensor = preprocess_image(raw_img).to(DEVICE)
+    model = IJEPAAdapter(config).to(device=DEVICE)
     model.eval()
     
     # 2. Generate Masks

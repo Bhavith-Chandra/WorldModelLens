@@ -15,6 +15,7 @@ import os
 
 from world_model_lens.analysis.attribution import IntegratedGradientsAttribution
 
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # ---------------------------------------------------------------------------
 # Visualization helpers (unchanged from original)
@@ -129,7 +130,7 @@ def visualize_ig_vs_attention(target_ids=None, k=6, n_ig_steps=50):
     that attention-based visualization misses.
     """
     raw_img = get_sample_image()
-    img_tensor = preprocess_image(raw_img)
+    img_tensor = preprocess_image(raw_img).to(DEVICE)
 
     config = WorldModelConfig(
         backend="ijepa", d_embed=192, n_layers=6, n_heads=3, predictor_embed_dim=384
@@ -143,6 +144,8 @@ def visualize_ig_vs_attention(target_ids=None, k=6, n_ig_steps=50):
             torch.load(checkpoint_path, weights_only=True), strict=False
         )
 
+    adapter = adapter.to(device=DEVICE)
+    print(f"Running on {DEVICE}")
     adapter.eval()
     wm = HookedWorldModel(adapter, config)
 
@@ -237,7 +240,7 @@ def visualize_ig_vs_attention(target_ids=None, k=6, n_ig_steps=50):
 def visualize_research_ijepa(target_ids=None, k=6, layout_mode="importance"):
     """Original attention-only visualization — retained for backward compatibility."""
     raw_img = get_sample_image()
-    img_tensor = preprocess_image(raw_img)
+    img_tensor = preprocess_image(raw_img).to(DEVICE)
 
     config = WorldModelConfig(
         backend="ijepa", d_embed=192, n_layers=6, n_heads=3, predictor_embed_dim=384
@@ -251,6 +254,7 @@ def visualize_research_ijepa(target_ids=None, k=6, layout_mode="importance"):
             torch.load(checkpoint_path, weights_only=True), strict=False
         )
 
+    adapter = adapter.to(device=DEVICE)
     wm = HookedWorldModel(adapter, config)
     wm.adapter.eval()
 

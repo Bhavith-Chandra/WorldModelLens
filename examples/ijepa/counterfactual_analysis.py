@@ -11,6 +11,8 @@ from world_model_lens.core.hooks import HookContext, HookPoint
 from image_utils import get_sample_image, preprocess_image, get_ijepa_masks
 import os
 
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
 class IJEPACounterfactualAnalyzer:
     def __init__(self):
         config = WorldModelConfig(backend="ijepa", d_embed=192, n_layers=6, n_heads=3, predictor_embed_dim=384)
@@ -19,14 +21,16 @@ class IJEPACounterfactualAnalyzer:
         if os.path.exists(checkpoint_path):
             print(f"Loading weights from {checkpoint_path}")
             self.adapter.load_state_dict(torch.load(checkpoint_path, weights_only=True), strict=False)
-            
+
+        self.adapter = self.adapter.to(device=DEVICE)
+        print(f"Running on {DEVICE}")
         self.wm = HookedWorldModel(self.adapter, config)
         self.wm.adapter.eval()
-        
+
         self.img_a_raw = get_sample_image()
-        self.img_a = preprocess_image(self.img_a_raw)
+        self.img_a = preprocess_image(self.img_a_raw).to(DEVICE)
         self.img_b_raw = self.img_a_raw.transpose(Image.Transpose.FLIP_LEFT_RIGHT)
-        self.img_b = preprocess_image(self.img_b_raw)
+        self.img_b = preprocess_image(self.img_b_raw).to(DEVICE)
         
         self.hook_fire_count = 0
 

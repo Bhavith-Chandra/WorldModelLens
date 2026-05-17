@@ -12,6 +12,7 @@ from world_model_lens.backends.ijepa_adapter import IJEPAAdapter
 from world_model_lens.core.config import WorldModelConfig
 from image_utils import get_sample_image, preprocess_image, get_ijepa_masks
 
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 class FormalCircuitDiscoverer:
     def __init__(self):
@@ -43,6 +44,9 @@ class FormalCircuitDiscoverer:
         else:
             print(f"Checkpoint not found: {checkpoint_path}")
 
+        self.adapter = self.adapter.to(device=DEVICE)
+        self.img_tensor = self.img_tensor.to(DEVICE)
+        print(f"Running on {DEVICE}")
         self.wm = HookedWorldModel(self.adapter, self.config)
         self.wm.adapter.eval()
 

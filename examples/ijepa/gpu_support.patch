@@ -1,0 +1,518 @@
+commit 694239b6b36f1ba93672760416425f150f39d6b7
+Author: Rishik00 <mrishikesh104@gmail.com>
+Date:   Sun May 17 11:53:57 2026 +0000
+
+    corrected all GPU bugs
+
+diff --git a/examples/ijepa/14_ijepa_experiment_suite.py b/examples/ijepa/14_ijepa_experiment_suite.py
+index 9ce82f6..fd396b1 100644
+--- a/examples/ijepa/14_ijepa_experiment_suite.py
++++ b/examples/ijepa/14_ijepa_experiment_suite.py
+@@ -34,7 +34,7 @@ def parse_args() -> argparse.Namespace:
+     )
+     parser.add_argument("--image", type=str, default=None, help="Optional image path.")
+     parser.add_argument("--imagenet-root", type=str, default=None, help="Optional ImageNet root.")
+-    parser.add_argument("--device", type=str, default="cpu", help="Torch device.")
++    parser.add_argument("--device", type=str, default=None, help="Torch device (default: auto-detect cuda).")
+     parser.add_argument(
+         "--output-dir", type=str, default=None, help="Optional output directory override."
+     )
+diff --git a/examples/ijepa/attribution_evaluation.py b/examples/ijepa/attribution_evaluation.py
+index d7d7048..20dce60 100644
+--- a/examples/ijepa/attribution_evaluation.py
++++ b/examples/ijepa/attribution_evaluation.py
+@@ -19,6 +19,8 @@ from world_model_lens.analysis.attribution import (
+ from image_utils import get_sample_image, preprocess_image, get_ijepa_masks
+ import argparse
+ 
++DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
++
+ def main():
+     parser = argparse.ArgumentParser(description="Evaluate I-JEPA patch attribution.")
+     parser.add_argument(
+@@ -55,38 +57,26 @@ def main():
+     else:
+         print(f"Warning: Weights not found at {weights_path}. Using random initialization.")
+ 
++    adapter = adapter.to(device=DEVICE)
++    print(f"Running on {DEVICE}")
+     adapter.eval()
+     wm = HookedWorldModel(adapter, config)
+ 
+     # Prepare validation dataset
+     print("Preparing validation dataset...")
+-    
+-    # We will use a few different validation images to ensure diversity
+-    image_urls = [
+-        "https://raw.githubusercontent.com/pytorch/hub/master/images/dog.jpg",
+-        "https://upload.wikimedia.org/wikipedia/commons/thumb/3/3a/Cat03.jpg/480px-Cat03.jpg",
+-        "https://upload.wikimedia.org/wikipedia/commons/thumb/4/47/PNG_transparency_demonstration_1.png/280px-PNG_transparency_demonstration_1.png",
+-        "https://upload.wikimedia.org/wikipedia/commons/thumb/e/e0/JPEG_example_JPG_RIP_025.jpg/250px-JPEG_example_JPG_RIP_025.jpg",
+-        "https://upload.wikimedia.org/wikipedia/commons/thumb/9/9a/Pug_600.jpg/300px-Pug_600.jpg"
+-    ]
+-    
++
++    # Use the canonical local dog image for all 50 samples
++    raw_img = get_sample_image()
++    img_tensor = preprocess_image(raw_img).to(DEVICE)
++
+     dataset = []
+-    # We want N=50 samples for a fast demo
+-    samples_per_image = 50 // len(image_urls)
+-    
+-    for url in image_urls:
+-        raw_img = get_sample_image(url)
+-        img_tensor = preprocess_image(raw_img)
+-        
+-        # Pick targets per image to reach N=50
+-        target_ids = list(range(10, 190, max(1, 190 // samples_per_image)))[:samples_per_image]
+-        
+-        for tid in target_ids:
+-            # Get random context masks
+-            context_ids, _ = get_ijepa_masks(num_context=80)
+-            if tid in context_ids:
+-                context_ids.remove(tid)
+-            dataset.append((img_tensor, context_ids, tid))
++    n_samples = 50
++    target_ids_all = list(range(10, 190, max(1, 190 // n_samples)))[:n_samples]
++    for tid in target_ids_all:
++        context_ids, _ = get_ijepa_masks(num_context=80)
++        if tid in context_ids:
++            context_ids.remove(tid)
++        dataset.append((img_tensor, context_ids, tid))
+ 
+     print(f"Created dataset with {len(dataset)} samples.")
+ 
+diff --git a/examples/ijepa/attribution_graph.py b/examples/ijepa/attribution_graph.py
+index 1787684..d78e14a 100644
+--- a/examples/ijepa/attribution_graph.py
++++ b/examples/ijepa/attribution_graph.py
+@@ -15,6 +15,7 @@ import os
+ 
+ from world_model_lens.analysis.attribution import IntegratedGradientsAttribution
+ 
++DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+ 
+ # ---------------------------------------------------------------------------
+ # Visualization helpers (unchanged from original)
+@@ -129,7 +130,7 @@ def visualize_ig_vs_attention(target_ids=None, k=6, n_ig_steps=50):
+     that attention-based visualization misses.
+     """
+     raw_img = get_sample_image()
+-    img_tensor = preprocess_image(raw_img)
++    img_tensor = preprocess_image(raw_img).to(DEVICE)
+ 
+     config = WorldModelConfig(
+         backend="ijepa", d_embed=192, n_layers=6, n_heads=3, predictor_embed_dim=384
+@@ -143,6 +144,8 @@ def visualize_ig_vs_attention(target_ids=None, k=6, n_ig_steps=50):
+             torch.load(checkpoint_path, weights_only=True), strict=False
+         )
+ 
++    adapter = adapter.to(device=DEVICE)
++    print(f"Running on {DEVICE}")
+     adapter.eval()
+     wm = HookedWorldModel(adapter, config)
+ 
+@@ -237,7 +240,7 @@ def visualize_ig_vs_attention(target_ids=None, k=6, n_ig_steps=50):
+ def visualize_research_ijepa(target_ids=None, k=6, layout_mode="importance"):
+     """Original attention-only visualization — retained for backward compatibility."""
+     raw_img = get_sample_image()
+-    img_tensor = preprocess_image(raw_img)
++    img_tensor = preprocess_image(raw_img).to(DEVICE)
+ 
+     config = WorldModelConfig(
+         backend="ijepa", d_embed=192, n_layers=6, n_heads=3, predictor_embed_dim=384
+@@ -251,6 +254,7 @@ def visualize_research_ijepa(target_ids=None, k=6, layout_mode="importance"):
+             torch.load(checkpoint_path, weights_only=True), strict=False
+         )
+ 
++    adapter = adapter.to(device=DEVICE)
+     wm = HookedWorldModel(adapter, config)
+     wm.adapter.eval()
+ 
+diff --git a/examples/ijepa/causal_evaluator.py b/examples/ijepa/causal_evaluator.py
+index 5ac9317..4a179f3 100644
+--- a/examples/ijepa/causal_evaluator.py
++++ b/examples/ijepa/causal_evaluator.py
+@@ -256,19 +256,23 @@ def plot_faithfulness(results_list, metric="mse"):
+ 
+ if __name__ == "__main__":
+     import os
+-    
++
++    DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
++    print(f"Running on {DEVICE}")
++
+     config = WorldModelConfig(backend="ijepa", d_embed=192, n_layers=6, n_heads=3, predictor_embed_dim=384)
+     model = IJEPAAdapter(config)
+-    
++
+     checkpoint_path = os.path.join(os.path.dirname(__file__), "ijepa_mini.pth")
+     if os.path.exists(checkpoint_path):
+         print(f"Loading trained weights from {checkpoint_path}...")
+         state_dict = torch.load(checkpoint_path, weights_only=True)
+         model.load_state_dict(state_dict, strict=False)
++    model = model.to(device=DEVICE)
+     model.eval()
+-    
++
+     raw_img = get_sample_image()
+-    img_tensor = preprocess_image(raw_img)
++    img_tensor = preprocess_image(raw_img).to(DEVICE)
+     
+     evaluator = IJEPAFaithfulnessEvaluator(model, img_tensor)
+     
+diff --git a/examples/ijepa/circuit_view.py b/examples/ijepa/circuit_view.py
+index 57a9c4b..2f763c7 100644
+--- a/examples/ijepa/circuit_view.py
++++ b/examples/ijepa/circuit_view.py
+@@ -13,20 +13,24 @@ import os
+ from typing import cast, Any
+ import matplotlib as mpl
+ 
++DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
++
+ class ThresholdCircuitVisualizer:
+     def __init__(self, threshold_pct=0.005):
+         self.threshold_pct = threshold_pct
+         self.raw_img = get_sample_image()
+-        self.img_tensor = preprocess_image(self.raw_img)
+-        
++        self.img_tensor = preprocess_image(self.raw_img).to(DEVICE)
++
+         config = WorldModelConfig(backend="ijepa", d_embed=192, n_layers=6, n_heads=3, predictor_embed_dim=384)
+         self.adapter = IJEPAAdapter(config)
+-        
++
+         checkpoint_path = "ijepa_mini.pth"
+         if os.path.exists(checkpoint_path):
+             print(f"Loading weights from {checkpoint_path}")
+             self.adapter.load_state_dict(torch.load(checkpoint_path, weights_only=True), strict=False)
+-            
++
++        self.adapter = self.adapter.to(device=DEVICE)
++        print(f"Running on {DEVICE}")
+         self.wm = HookedWorldModel(self.adapter, config)
+         self.wm.adapter.eval()
+ 
+diff --git a/examples/ijepa/counterfactual_analysis.py b/examples/ijepa/counterfactual_analysis.py
+index cfdbe26..48c169f 100644
+--- a/examples/ijepa/counterfactual_analysis.py
++++ b/examples/ijepa/counterfactual_analysis.py
+@@ -11,6 +11,8 @@ from world_model_lens.core.hooks import HookContext, HookPoint
+ from image_utils import get_sample_image, preprocess_image, get_ijepa_masks
+ import os
+ 
++DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
++
+ class IJEPACounterfactualAnalyzer:
+     def __init__(self):
+         config = WorldModelConfig(backend="ijepa", d_embed=192, n_layers=6, n_heads=3, predictor_embed_dim=384)
+@@ -19,14 +21,16 @@ class IJEPACounterfactualAnalyzer:
+         if os.path.exists(checkpoint_path):
+             print(f"Loading weights from {checkpoint_path}")
+             self.adapter.load_state_dict(torch.load(checkpoint_path, weights_only=True), strict=False)
+-            
++
++        self.adapter = self.adapter.to(device=DEVICE)
++        print(f"Running on {DEVICE}")
+         self.wm = HookedWorldModel(self.adapter, config)
+         self.wm.adapter.eval()
+-        
++
+         self.img_a_raw = get_sample_image()
+-        self.img_a = preprocess_image(self.img_a_raw)
++        self.img_a = preprocess_image(self.img_a_raw).to(DEVICE)
+         self.img_b_raw = self.img_a_raw.transpose(Image.Transpose.FLIP_LEFT_RIGHT)
+-        self.img_b = preprocess_image(self.img_b_raw)
++        self.img_b = preprocess_image(self.img_b_raw).to(DEVICE)
+         
+         self.hook_fire_count = 0
+ 
+diff --git a/examples/ijepa/experiment_utils.py b/examples/ijepa/experiment_utils.py
+index 18e40ae..a8dfdcb 100644
+--- a/examples/ijepa/experiment_utils.py
++++ b/examples/ijepa/experiment_utils.py
+@@ -103,8 +103,9 @@ def load_condition_world_model(
+     else:
+         raise ValueError(f"Unknown condition: {condition}")
+ 
+-    if device is not None:
+-        adapter = adapter.to(torch.device(device))
++    if device is None:
++        device = "cuda" if torch.cuda.is_available() else "cpu"
++    adapter = adapter.to(device=torch.device(device))
+ 
+     adapter.eval()
+     wm = HookedWorldModel(adapter=adapter, config=config, name=f"ijepa_{condition_name}")
+diff --git a/examples/ijepa/formal_circuits.py b/examples/ijepa/formal_circuits.py
+index 9b8711d..5eb82a1 100644
+--- a/examples/ijepa/formal_circuits.py
++++ b/examples/ijepa/formal_circuits.py
+@@ -12,6 +12,7 @@ from world_model_lens.backends.ijepa_adapter import IJEPAAdapter
+ from world_model_lens.core.config import WorldModelConfig
+ from image_utils import get_sample_image, preprocess_image, get_ijepa_masks
+ 
++DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+ 
+ class FormalCircuitDiscoverer:
+     def __init__(self):
+@@ -43,6 +44,9 @@ class FormalCircuitDiscoverer:
+         else:
+             print(f"Checkpoint not found: {checkpoint_path}")
+ 
++        self.adapter = self.adapter.to(device=DEVICE)
++        self.img_tensor = self.img_tensor.to(DEVICE)
++        print(f"Running on {DEVICE}")
+         self.wm = HookedWorldModel(self.adapter, self.config)
+         self.wm.adapter.eval()
+ 
+diff --git a/examples/ijepa/image_utils.py b/examples/ijepa/image_utils.py
+index 235f674..fec867c 100644
+--- a/examples/ijepa/image_utils.py
++++ b/examples/ijepa/image_utils.py
+@@ -3,17 +3,23 @@ import numpy as np
+ from PIL import Image
+ import urllib.request
+ import io
++from pathlib import Path
+ from typing import Tuple, List
+ 
++_LOCAL_DOG = Path(__file__).with_name("dog.jpg")
++
+ def get_sample_image(url: str = "https://raw.githubusercontent.com/pytorch/hub/master/images/dog.jpg") -> Image.Image:
+-    """Downloads a sample image from the web."""
++    """Returns the canonical dog image, preferring the local cached copy."""
++    if _LOCAL_DOG.exists():
++        return Image.open(_LOCAL_DOG).convert("RGB")
+     try:
+         with urllib.request.urlopen(url) as response:
+             data = response.read()
+-        return Image.open(io.BytesIO(data)).convert("RGB")
++        img = Image.open(io.BytesIO(data)).convert("RGB")
++        img.save(_LOCAL_DOG)
++        return img
+     except Exception as e:
+         print(f"Failed to download image: {e}. Generating synthetic image.")
+-        # Fallback: Generate a synthetic image with some patterns
+         img_array = np.zeros((224, 224, 3), dtype=np.uint8)
+         for i in range(224):
+             for j in range(224):
+diff --git a/examples/ijepa/interactive_explorer.py b/examples/ijepa/interactive_explorer.py
+index cf23dc5..699e579 100644
+--- a/examples/ijepa/interactive_explorer.py
++++ b/examples/ijepa/interactive_explorer.py
+@@ -12,22 +12,24 @@ from world_model_lens.core.config import WorldModelConfig
+ from image_utils import get_sample_image, preprocess_image
+ from matplotlib import cm
+ 
++DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
++
+ class AttributionExplorer:
+     def __init__(self, k=6, threshold=0.01, layout="radial"):
+-        print("Initializing official I-JEPA Interactive Explorer...")
++        print(f"Initializing official I-JEPA Interactive Explorer on {DEVICE}...")
+         self.k = k
+         self.threshold = threshold
+         self.layout_mode = layout
+-        self.target_id = 97 
++        self.target_id = 97
+         self.hovered_node = None
+-        
++
+         # 1. Load Model & Data
+         self.raw_img = get_sample_image()
+-        self.img_tensor = preprocess_image(self.raw_img)
+-        
++        self.img_tensor = preprocess_image(self.raw_img).to(DEVICE)
++
+         config = WorldModelConfig(backend="ijepa", d_embed=192, n_layers=6, n_heads=3, predictor_embed_dim=384, predictor_depth=4, predictor_heads=6)
+         self.adapter = IJEPAAdapter(config)
+-        
++
+         # Load weights if they exist (best effort)
+         import os
+         checkpoint_path = "ijepa_mini.pth"
+@@ -37,7 +39,8 @@ class AttributionExplorer:
+                 self.adapter.load_state_dict(torch.load(checkpoint_path, weights_only=True), strict=False)
+             except Exception as e:
+                 print(f"Could not load weights: {e}. Using random initialization.")
+-            
++
++        self.adapter = self.adapter.to(device=DEVICE)
+         self.wm = HookedWorldModel(self.adapter, config)
+         self.wm.adapter.eval()
+         
+diff --git a/examples/ijepa/progressive_build.py b/examples/ijepa/progressive_build.py
+index 16b64b8..e72137d 100644
+--- a/examples/ijepa/progressive_build.py
++++ b/examples/ijepa/progressive_build.py
+@@ -9,6 +9,8 @@ from world_model_lens.backends.ijepa_adapter import IJEPAAdapter
+ from image_utils import get_sample_image, preprocess_image, get_ijepa_masks
+ from world_model_lens.core.config import WorldModelConfig
+ 
++DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
++
+ config = WorldModelConfig(
+     backend="ijepa",
+     d_embed=192,
+@@ -29,10 +31,10 @@ def animate_ijepa_progressive(seed: int = 42):
+     np.random.seed(seed)
+     
+     # 1. Setup Data & Model
+-    print("Loading image and model...")
++    print(f"Loading image and model on {DEVICE}...")
+     raw_img = get_sample_image()
+-    img_tensor = preprocess_image(raw_img)
+-    model = IJEPAAdapter(config)
++    img_tensor = preprocess_image(raw_img).to(DEVICE)
++    model = IJEPAAdapter(config).to(device=DEVICE)
+     model.eval()
+     
+     # 2. Generate Masks
+diff --git a/examples/ijepa/structural_circuits.py b/examples/ijepa/structural_circuits.py
+index 5a08044..719c19e 100644
+--- a/examples/ijepa/structural_circuits.py
++++ b/examples/ijepa/structural_circuits.py
+@@ -9,6 +9,8 @@ from world_model_lens.core.hooks import HookContext, HookPoint
+ from image_utils import get_sample_image, preprocess_image, get_ijepa_masks
+ import os
+ 
++DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
++
+ class IJEPAStructuralTracer:
+     def __init__(self, target_id=114, control_target_id=42):
+         """Args:
+@@ -20,16 +22,18 @@ class IJEPAStructuralTracer:
+         self.target_id = target_id
+         self.control_target_id = control_target_id
+         self.raw_img = get_sample_image()
+-        self.img_tensor = preprocess_image(self.raw_img)
+-        
++        self.img_tensor = preprocess_image(self.raw_img).to(DEVICE)
++
+         config = WorldModelConfig(backend="ijepa", d_embed=192, n_layers=6, n_heads=3, predictor_embed_dim=384, predictor_depth=4, predictor_heads=6)
+         self.adapter = IJEPAAdapter(config)
+-        
++
+         checkpoint_path = os.path.join(os.path.dirname(__file__), "ijepa_mini.pth")
+         if os.path.exists(checkpoint_path):
+             print(f"Loading weights from {checkpoint_path}")
+             self.adapter.load_state_dict(torch.load(checkpoint_path, weights_only=True), strict=False)
+-            
++
++        self.adapter = self.adapter.to(device=DEVICE)
++        print(f"Running on {DEVICE}")
+         self.wm = HookedWorldModel(self.adapter, config)
+         self.wm.adapter.eval()
+         
+diff --git a/examples/ijepa/surgical_counterfactual.py b/examples/ijepa/surgical_counterfactual.py
+index 0de7ce8..66c05e5 100644
+--- a/examples/ijepa/surgical_counterfactual.py
++++ b/examples/ijepa/surgical_counterfactual.py
+@@ -16,6 +16,8 @@ from image_utils import preprocess_image, get_sample_image
+ logging.basicConfig(level=logging.INFO)
+ logger = logging.getLogger("SurgicalCounterfactual")
+ 
++DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
++
+ class SurgicalCounterfactual:
+     def __init__(self, cat_path, dog_path, target_patch=118):
+         self.target_patch = target_patch
+@@ -25,18 +27,20 @@ class SurgicalCounterfactual:
+         self.config.n_heads = 3
+         self.config.embed_dim = 192
+         self.config.predictor_embed_dim = 192
+-        
++
+         self.adapter = IJEPAAdapter(self.config)
+         checkpoint_path = "ijepa_mini.pth"
+         if os.path.exists(checkpoint_path):
+             self.adapter.from_checkpoint(checkpoint_path)
+-            
++
++        self.adapter = self.adapter.to(device=DEVICE)
++        logger.info(f"Running on {DEVICE}")
+         self.wm = HookedWorldModel(self.adapter, self.config)
+         self.wm.adapter.eval()
+-        
++
+         # Load images
+-        self.img_cat = preprocess_image(Image.open(cat_path).convert("RGB"))
+-        self.img_dog = preprocess_image(Image.open(dog_path).convert("RGB"))
++        self.img_cat = preprocess_image(Image.open(cat_path).convert("RGB")).to(DEVICE)
++        self.img_dog = preprocess_image(Image.open(dog_path).convert("RGB")).to(DEVICE)
+         
+         # Consistent mask (top half)
+         self.context_ids = list(range(196 // 2))
+diff --git a/examples/ijepa/train_ijepa.py b/examples/ijepa/train_ijepa.py
+index 1878599..85359eb 100644
+--- a/examples/ijepa/train_ijepa.py
++++ b/examples/ijepa/train_ijepa.py
+@@ -7,9 +7,11 @@ from image_utils import get_sample_image, preprocess_image
+ import time
+ import os
+ 
++DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
++
+ def train_ijepa_mini(epochs=300, steps_per_epoch=4, lr=1e-4):
+-    print("Starting I-JEPA Mini-Training with official IJEPAAdapter...")
+-    
++    print(f"Starting I-JEPA Mini-Training on {DEVICE}...")
++
+     config = WorldModelConfig(
+         backend="ijepa",
+         d_embed=192,
+@@ -19,18 +21,18 @@ def train_ijepa_mini(epochs=300, steps_per_epoch=4, lr=1e-4):
+         predictor_depth=4,
+         predictor_heads=6
+     )
+-    
+-    model = IJEPAAdapter(config)
++
++    model = IJEPAAdapter(config).to(device=DEVICE)
+     model.train()
+-    
++
+     # We only optimize the context encoder and predictor
+     # target_encoder is updated via EMA from context_encoder
+     params = list(model.context_encoder.parameters()) + list(model.predictor.parameters())
+     optimizer = optim.Adam(params, lr=lr)
+-    
++
+     # We'll use a few "scenes" for training
+     raw_img = get_sample_image()
+-    img_tensor = preprocess_image(raw_img)
++    img_tensor = preprocess_image(raw_img).to(DEVICE)
+     
+     losses = []
+     start_time = time.time()
+diff --git a/examples/ijepa/utils.py b/examples/ijepa/utils.py
+index e9ae170..459daf2 100644
+--- a/examples/ijepa/utils.py
++++ b/examples/ijepa/utils.py
+@@ -101,8 +101,9 @@ def load_ijepa_world_model(
+     state_dict = _load_checkpoint_state_dict(checkpoint)
+     adapter.load_state_dict(state_dict, strict=False)
+ 
+-    if device is not None:
+-        adapter = adapter.to(torch.device(device))
++    if device is None:
++        device = "cuda" if torch.cuda.is_available() else "cpu"
++    adapter = adapter.to(device=torch.device(device))
+ 
+     wm = HookedWorldModel(adapter=adapter, config=config, name="ijepa_checkpoint")
+     adapter.eval()
+@@ -155,6 +156,12 @@ def get_sample_image(
+ 
+         raise FileNotFoundError(f"No image files found under ImageNet root: {root}")
+ 
++    local_dog = EXAMPLE_DIR / "dog.jpg"
++    if local_dog.exists():
++        image = Image.open(local_dog).convert("RGB")
++        metadata.update({"source": "dog.jpg", "path": str(local_dog)})
++        return image.resize((image_size, image_size)), metadata
++
+     grid = np.linspace(0, 255, image_size, dtype=np.uint8)
+     xv, yv = np.meshgrid(grid, grid)
+     array = np.stack(

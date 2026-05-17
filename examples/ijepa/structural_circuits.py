@@ -9,6 +9,8 @@ from world_model_lens.core.hooks import HookContext, HookPoint
 from image_utils import get_sample_image, preprocess_image, get_ijepa_masks
 import os
 
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
 class IJEPAStructuralTracer:
     def __init__(self, target_id=114, control_target_id=42):
         """Args:
@@ -20,16 +22,18 @@ class IJEPAStructuralTracer:
         self.target_id = target_id
         self.control_target_id = control_target_id
         self.raw_img = get_sample_image()
-        self.img_tensor = preprocess_image(self.raw_img)
-        
+        self.img_tensor = preprocess_image(self.raw_img).to(DEVICE)
+
         config = WorldModelConfig(backend="ijepa", d_embed=192, n_layers=6, n_heads=3, predictor_embed_dim=384, predictor_depth=4, predictor_heads=6)
         self.adapter = IJEPAAdapter(config)
-        
+
         checkpoint_path = os.path.join(os.path.dirname(__file__), "ijepa_mini.pth")
         if os.path.exists(checkpoint_path):
             print(f"Loading weights from {checkpoint_path}")
             self.adapter.load_state_dict(torch.load(checkpoint_path, weights_only=True), strict=False)
-            
+
+        self.adapter = self.adapter.to(device=DEVICE)
+        print(f"Running on {DEVICE}")
         self.wm = HookedWorldModel(self.adapter, config)
         self.wm.adapter.eval()
         

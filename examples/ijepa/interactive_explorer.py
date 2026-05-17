@@ -12,22 +12,24 @@ from world_model_lens.core.config import WorldModelConfig
 from image_utils import get_sample_image, preprocess_image
 from matplotlib import cm
 
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
 class AttributionExplorer:
     def __init__(self, k=6, threshold=0.01, layout="radial"):
-        print("Initializing official I-JEPA Interactive Explorer...")
+        print(f"Initializing official I-JEPA Interactive Explorer on {DEVICE}...")
         self.k = k
         self.threshold = threshold
         self.layout_mode = layout
-        self.target_id = 97 
+        self.target_id = 97
         self.hovered_node = None
-        
+
         # 1. Load Model & Data
         self.raw_img = get_sample_image()
-        self.img_tensor = preprocess_image(self.raw_img)
-        
+        self.img_tensor = preprocess_image(self.raw_img).to(DEVICE)
+
         config = WorldModelConfig(backend="ijepa", d_embed=192, n_layers=6, n_heads=3, predictor_embed_dim=384, predictor_depth=4, predictor_heads=6)
         self.adapter = IJEPAAdapter(config)
-        
+
         # Load weights if they exist (best effort)
         import os
         checkpoint_path = "ijepa_mini.pth"
@@ -37,7 +39,8 @@ class AttributionExplorer:
                 self.adapter.load_state_dict(torch.load(checkpoint_path, weights_only=True), strict=False)
             except Exception as e:
                 print(f"Could not load weights: {e}. Using random initialization.")
-            
+
+        self.adapter = self.adapter.to(device=DEVICE)
         self.wm = HookedWorldModel(self.adapter, config)
         self.wm.adapter.eval()
         

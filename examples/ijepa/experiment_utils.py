@@ -103,8 +103,9 @@ def load_condition_world_model(
     else:
         raise ValueError(f"Unknown condition: {condition}")
 
-    if device is not None:
-        adapter = adapter.to(torch.device(device))
+    if device is None:
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+    adapter = adapter.to(device=torch.device(device))
 
     adapter.eval()
     wm = HookedWorldModel(adapter=adapter, config=config, name=f"ijepa_{condition_name}")

@@ -19,6 +19,8 @@ from world_model_lens.analysis.attribution import (
 from image_utils import get_sample_image, preprocess_image, get_ijepa_masks
 import argparse
 
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
 def main():
     parser = argparse.ArgumentParser(description="Evaluate I-JEPA patch attribution.")
     parser.add_argument(
@@ -55,38 +57,26 @@ def main():
     else:
         print(f"Warning: Weights not found at {weights_path}. Using random initialization.")
 
+    adapter = adapter.to(device=DEVICE)
+    print(f"Running on {DEVICE}")
     adapter.eval()
     wm = HookedWorldModel(adapter, config)
 
     # Prepare validation dataset
     print("Preparing validation dataset...")
-    
-    # We will use a few different validation images to ensure diversity
-    image_urls = [
-        "https://raw.githubusercontent.com/pytorch/hub/master/images/dog.jpg",
-        "https://upload.wikimedia.org/wikipedia/commons/thumb/3/3a/Cat03.jpg/480px-Cat03.jpg",
-        "https://upload.wikimedia.org/wikipedia/commons/thumb/4/47/PNG_transparency_demonstration_1.png/280px-PNG_transparency_demonstration_1.png",
-        "https://upload.wikimedia.org/wikipedia/commons/thumb/e/e0/JPEG_example_JPG_RIP_025.jpg/250px-JPEG_example_JPG_RIP_025.jpg",
-        "https://upload.wikimedia.org/wikipedia/commons/thumb/9/9a/Pug_600.jpg/300px-Pug_600.jpg"
-    ]
-    
+
+    # Use the canonical local dog image for all 50 samples
+    raw_img = get_sample_image()
+    img_tensor = preprocess_image(raw_img).to(DEVICE)
+
     dataset = []
-    # We want N=50 samples for a fast demo
-    samples_per_image = 50 // len(image_urls)
-    
-    for url in image_urls:
-        raw_img = get_sample_image(url)
-        img_tensor = preprocess_image(raw_img)
-        
-        # Pick targets per image to reach N=50
-        target_ids = list(range(10, 190, max(1, 190 // samples_per_image)))[:samples_per_image]
-        
-        for tid in target_ids:
-            # Get random context masks
-            context_ids, _ = get_ijepa_masks(num_context=80)
-            if tid in context_ids:
-                context_ids.remove(tid)
-            dataset.append((img_tensor, context_ids, tid))
+    n_samples = 50
+    target_ids_all = list(range(10, 190, max(1, 190 // n_samples)))[:n_samples]
+    for tid in target_ids_all:
+        context_ids, _ = get_ijepa_masks(num_context=80)
+        if tid in context_ids:
+            context_ids.remove(tid)
+        dataset.append((img_tensor, context_ids, tid))
 
     print(f"Created dataset with {len(dataset)} samples.")
 

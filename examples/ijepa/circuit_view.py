@@ -13,20 +13,24 @@ import os
 from typing import cast, Any
 import matplotlib as mpl
 
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
 class ThresholdCircuitVisualizer:
     def __init__(self, threshold_pct=0.005):
         self.threshold_pct = threshold_pct
         self.raw_img = get_sample_image()
-        self.img_tensor = preprocess_image(self.raw_img)
-        
+        self.img_tensor = preprocess_image(self.raw_img).to(DEVICE)
+
         config = WorldModelConfig(backend="ijepa", d_embed=192, n_layers=6, n_heads=3, predictor_embed_dim=384)
         self.adapter = IJEPAAdapter(config)
-        
+
         checkpoint_path = "ijepa_mini.pth"
         if os.path.exists(checkpoint_path):
             print(f"Loading weights from {checkpoint_path}")
             self.adapter.load_state_dict(torch.load(checkpoint_path, weights_only=True), strict=False)
-            
+
+        self.adapter = self.adapter.to(device=DEVICE)
+        print(f"Running on {DEVICE}")
         self.wm = HookedWorldModel(self.adapter, config)
         self.wm.adapter.eval()
 

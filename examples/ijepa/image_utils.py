@@ -3,17 +3,23 @@ import numpy as np
 from PIL import Image
 import urllib.request
 import io
+from pathlib import Path
 from typing import Tuple, List
 
+_LOCAL_DOG = Path(__file__).with_name("dog.jpg")
+
 def get_sample_image(url: str = "https://raw.githubusercontent.com/pytorch/hub/master/images/dog.jpg") -> Image.Image:
-    """Downloads a sample image from the web."""
+    """Returns the canonical dog image, preferring the local cached copy."""
+    if _LOCAL_DOG.exists():
+        return Image.open(_LOCAL_DOG).convert("RGB")
     try:
         with urllib.request.urlopen(url) as response:
             data = response.read()
-        return Image.open(io.BytesIO(data)).convert("RGB")
+        img = Image.open(io.BytesIO(data)).convert("RGB")
+        img.save(_LOCAL_DOG)
+        return img
     except Exception as e:
         print(f"Failed to download image: {e}. Generating synthetic image.")
-        # Fallback: Generate a synthetic image with some patterns
         img_array = np.zeros((224, 224, 3), dtype=np.uint8)
         for i in range(224):
             for j in range(224):

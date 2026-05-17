@@ -9,7 +9,9 @@
       "Bash(python -c \"import sys; sys.path.insert\\(0, 'examples/ijepa'\\); from importlib.util import spec_from_file_location, module_from_spec; spec = spec_from_file_location\\('example', 'examples/ijepa/12_ijepa_probing.py'\\); mod = module_from_spec\\(spec\\); print\\('Syntax check passed'\\)\")",
       "Bash(python -m py_compile \"examples/ijepa/12_ijepa_probing.py\")",
       "Bash(ruff format *)",
-      "Bash(ruff check *)"
+      "Bash(ruff check *)",
+      "Bash(git -C C:\\\\Users\\\\user\\\\Desktop\\\\WorldModelLens log --oneline -5)",
+      "PowerShell(git *)"
     ]
   }
 }

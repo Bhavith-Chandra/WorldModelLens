@@ -16,6 +16,8 @@ from image_utils import preprocess_image, get_sample_image
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("SurgicalCounterfactual")
 
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
 class SurgicalCounterfactual:
     def __init__(self, cat_path, dog_path, target_patch=118):
         self.target_patch = target_patch
@@ -25,18 +27,20 @@ class SurgicalCounterfactual:
         self.config.n_heads = 3
         self.config.embed_dim = 192
         self.config.predictor_embed_dim = 192
-        
+
         self.adapter = IJEPAAdapter(self.config)
         checkpoint_path = "ijepa_mini.pth"
         if os.path.exists(checkpoint_path):
             self.adapter.from_checkpoint(checkpoint_path)
-            
+
+        self.adapter = self.adapter.to(device=DEVICE)
+        logger.info(f"Running on {DEVICE}")
         self.wm = HookedWorldModel(self.adapter, self.config)
         self.wm.adapter.eval()
-        
+
         # Load images
-        self.img_cat = preprocess_image(Image.open(cat_path).convert("RGB"))
-        self.img_dog = preprocess_image(Image.open(dog_path).convert("RGB"))
+        self.img_cat = preprocess_image(Image.open(cat_path).convert("RGB")).to(DEVICE)
+        self.img_dog = preprocess_image(Image.open(dog_path).convert("RGB")).to(DEVICE)
         
         # Consistent mask (top half)
         self.context_ids = list(range(196 // 2))
