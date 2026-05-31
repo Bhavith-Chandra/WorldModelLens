@@ -172,6 +172,17 @@ def plot_circuit_graph_plotly(nx_graph, title: str = "SAE Feature Circuit"):
             layer_to_idx[layer] = len(layer_to_idx)
         node_color.append(layer_to_idx[layer])
 
+    # compute aggregated stats for node hover
+    node_texts = []
+    for n in nx_graph.nodes():
+        out_w = sum(d.get("weight", 0.0) for _, _, d in nx_graph.out_edges(n, data=True))
+        in_w = sum(d.get("weight", 0.0) for _, _, d in nx_graph.in_edges(n, data=True))
+        deg_out = nx_graph.out_degree(n)
+        deg_in = nx_graph.in_degree(n)
+        node_texts.append(
+            f"{n}<br>out_weight: {out_w:.4f}<br>in_weight: {in_w:.4f}<br>out_deg: {deg_out}<br>in_deg: {deg_in}"
+        )
+
     node_trace = go.Scatter(
         x=node_x,
         y=node_y,
@@ -180,9 +191,32 @@ def plot_circuit_graph_plotly(nx_graph, title: str = "SAE Feature Circuit"):
         textposition="bottom center",
         marker=dict(size=12, color=node_color, colorscale="Viridis", showscale=False),
         hoverinfo="text",
+        hovertext=node_texts,
     )
 
-    fig = go.Figure(data=edge_traces + [node_trace])
+    # Add an invisible scatter for a colorbar representing edge weight mapping
+    try:
+        colorbar_trace = go.Scatter(
+            x=[min(node_x) - 1],
+            y=[min(node_y) - 1],
+            mode="markers",
+            marker=dict(
+                colorscale="Plasma",
+                color=weights if weights else [0],
+                showscale=True,
+                cmin=0,
+                cmax=max_w,
+                size=0.1,
+                colorbar=dict(title="edge weight"),
+            ),
+            hoverinfo="none",
+            showlegend=False,
+        )
+        data = edge_traces + [colorbar_trace, node_trace]
+    except Exception:
+        data = edge_traces + [node_trace]
+
+    fig = go.Figure(data=data)
     fig.update_layout(
         title=title,
         xaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
