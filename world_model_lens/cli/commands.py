@@ -59,7 +59,6 @@ def download(
       wml download --cache-info            # inspect local cache
       wml download --list-all              # include coming-soon entries
     """
-    
 
     dl = WeightsDownloader(cache_dir=cache_dir)
 
@@ -133,7 +132,6 @@ def version():
 @app.command()
 def info():
     """Show device and version information."""
-    
 
     device = get_device()
     console.print(f"[bold]World Model Lens[/bold] v{__version__}")
@@ -174,7 +172,6 @@ def analyze(
     - Surprise timeline
     - Disentanglement metrics
     """
-    
 
     console.print(f"[bold]Analyzing:[/bold] {checkpoint_path}")
     console.print(f"[bold]Backend:[/bold] {backend}")
@@ -308,6 +305,145 @@ def probe(
 
 
 @app.command()
+def circuits(
+    checkpoint_path: str = typer.Argument(..., help="Path to model checkpoint"),
+    layers: str = typer.Option(
+        "encoder,dynamics,decoder", help="Comma-separated layer names to analyze"
+    ),
+    sae_checkpoints: Optional[str] = typer.Option(
+        None,
+        help="Comma-separated SAE checkpoint files matching layers order (optional). If omitted, wml will look for files named <model>.{layer}.sae.pt next to the model checkpoint.",
+    ),
+    observations: str = typer.Option(
+        ..., help="Path to a torch-saved tensor (.pt) containing observations to run with the model"
+    ),
+    output: str = typer.Option(
+        "./circuits_graph.gml", help="Output path to save the graph (networkx gml)"
+    ),
+    threshold: float = typer.Option(1e-3, help="Edge threshold for including edges"),
+    topk: int = typer.Option(50, help="Top-K outgoing edges to keep per source feature"),
+):
+    """Build cross-layer SAE feature circuits and save graph to disk.
+
+    Example:
+      wml circuits model.pt --layers encoder,dynamics --observations obs.pt --output circuits.gml
+    """
+    console.print(f"[bold]Building SAE feature circuits for:[/bold] {checkpoint_path}")
+
+    try:
+        cfg = WorldModelConfig(d_action=4, d_obs=12288, backend=cast(Any, "dreamerv3"))
+        wm = HookedWorldModel.from_checkpoint(checkpoint_path, backend="dreamerv3", config=cfg)
+
+        # load observations
+        obs = torch.load(observations)
+
+        layer_list = [s.strip() for s in layers.split(",") if s.strip()]
+
+        sae_files = None
+        if sae_checkpoints:
+            sae_files = [s.strip() for s in sae_checkpoints.split(",")]
+            if len(sae_files) != len(layer_list):
+                console.print(
+                    "[red]Error: number of SAE checkpoints must match number of layers[/red]"
+                )
+                raise typer.Exit(1)
+        else:
+            # try convention: <checkpoint_path>.<layer>.sae.pt
+            base = checkpoint_path
+            sae_files = [f"{base}.{layer}.sae.pt" for layer in layer_list]
+
+        # load SAEs, support common variants: direct pickled object, trainer.SAETrainingResult.sae,
+        # or state-dict saved dicts.
+        from world_model_lens.sae import SAEFeatureCircuitAnalyzer
+
+        saes = {}
+        cache_keys = {}
+        for layer, sf in zip(layer_list, sae_files):
+            try:
+                loaded = torch.load(sf)
+            except Exception as e:
+                console.print(f"[red]Failed to load SAE file {sf}: {e}[/red]")
+                raise typer.Exit(1)
+
+            sae = None
+            # pattern: SAETrainingResult or similar wrapper
+            if hasattr(loaded, "sae"):
+                sae = getattr(loaded, "sae")
+            # direct SAE implementation
+            elif hasattr(loaded, "encode") and hasattr(loaded, "decode"):
+                sae = loaded
+            # dict with state_dict
+            elif isinstance(loaded, dict) and "state_dict" in loaded:
+                try:
+                    from world_model_lens.sae.trainer import SAETrainer
+
+                    # best-effort reconstruct trainer (user may need to supply sizes)
+                    d_input = loaded.get("d_input", None) or loaded.get("input_dim", None) or 0
+                    n_boj = loaded.get("n_boj", None) or loaded.get("n_features", None) or 0
+                    k = loaded.get("k", 1)
+                    trainer = SAETrainer(d_input=d_input, n_boj=n_boj, k=k)
+                    trainer.sae.load_state_dict(loaded["state_dict"])  # type: ignore[arg-type]
+                    sae = trainer.sae
+                except Exception:
+                    sae = None
+
+            if sae is None:
+                console.print(
+                    f"[red]Could not interpret SAE file {sf} for layer {layer}. Provide a trained SAE object or trainer output.[/red]"
+                )
+                raise typer.Exit(1)
+
+            saes[layer] = sae
+            cache_keys[layer] = layer  # default key = layer name; user can adjust later
+
+        analyzer = SAEFeatureCircuitAnalyzer(
+            wm=wm, saes=saes, cache_keys=cache_keys, threshold=threshold, topk_per_source=topk
+        )
+
+        graph = analyzer.build_graph(obs)
+
+        # export to networkx and save
+        nx = None
+        try:
+            import networkx as nx
+        except Exception:
+            console.print(
+                "[red]networkx is required to save the graph. Install networkx and retry.[/red]"
+            )
+            raise typer.Exit(1)
+
+        G = graph.to_networkx()
+        nx.write_gml(G, output)
+
+        # persist compact JSON metadata alongside GML for easy programmatic loading
+        import json
+
+        meta = {
+            "edges": [
+                {
+                    "src_layer": e.src_layer,
+                    "src_feat": e.src_feat,
+                    "tgt_layer": e.tgt_layer,
+                    "tgt_feat": e.tgt_feat,
+                    "weight": e.weight,
+                }
+                for e in graph.edges
+            ],
+            "layer_feature_counts": graph.layer_feature_counts,
+        }
+        meta_path = output + ".json"
+        with open(meta_path, "w", encoding="utf-8") as fh:
+            json.dump(meta, fh, indent=2)
+
+        console.print(f"[green]Saved circuits graph to:[/green] {output}")
+        console.print(f"[green]Saved circuits metadata to:[/green] {meta_path}")
+
+    except Exception as e:
+        console.print(f"[red]Error while building circuits:[/red] {e}")
+        raise typer.Exit(1)
+
+
+@app.command()
 def benchmark(
     checkpoint_path: str = typer.Argument(..., help="Path to model checkpoint"),
     backend: str = typer.Option("dreamerv3", help="Backend architecture"),
@@ -343,7 +479,6 @@ def capabilities(
     Displays which optional features (decoder, reward head, critic, etc.)
     are available in the model.
     """
-    
 
     console.print(f"[bold]Inspecting:[/bold] {checkpoint_path}")
     console.print(f"[bold]Backend:[/bold] {backend}")

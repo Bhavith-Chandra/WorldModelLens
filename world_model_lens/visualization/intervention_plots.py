@@ -4,7 +4,7 @@ Show effects of patches/counterfactuals.
 """
 
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 import torch
 import numpy as np
 
@@ -217,7 +217,7 @@ class InterventionVisualizer:
 
         for state in trajectory.states:
             s = state.flat
-            importance[:len(s)] += s.abs().detach().cpu().numpy()[:d_z]
+            importance[: len(s)] += s.abs().detach().cpu().numpy()[:d_z]
 
         return importance / max(len(trajectory.states), 1)
 
