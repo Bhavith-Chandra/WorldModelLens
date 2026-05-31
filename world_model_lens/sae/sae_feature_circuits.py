@@ -210,7 +210,18 @@ class SAEFeatureCircuitAnalyzer:
         active_features: Dict[str, List[int]] = {}
         for layer, feats in clean_acts.items():
             act_rate = (feats > 0).float().mean(dim=0)
+            mean_activation = feats.abs().mean(dim=0)
             alive = (act_rate > 0).nonzero(as_tuple=True)[0].tolist()
+
+            # Apply per-layer feature limit (select top-k by mean activation)
+            if self.max_features_per_layer is not None and len(alive) > 0:
+                # rank alive features by mean_activation
+                alive_indices = torch.tensor(alive, dtype=torch.long)
+                scores = mean_activation[alive_indices]
+                k = min(self.max_features_per_layer, len(alive))
+                topk_idx = torch.topk(scores, k=k).indices.tolist()
+                alive = [alive[i] for i in topk_idx]
+
             active_features[layer] = alive
 
         graph = FeatureCircuitGraph()
