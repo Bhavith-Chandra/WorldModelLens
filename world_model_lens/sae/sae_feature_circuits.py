@@ -21,6 +21,9 @@ from dataclasses import dataclass
 import warnings
 import torch
 import numpy as np
+import torch.distributions as dist
+import networkx as nx
+from world_model_lens.core.hooks import HookPoint
 
 
 @dataclass
@@ -77,11 +80,6 @@ class FeatureCircuitGraph:
         Node attributes: layer (str), index (int), normalized_index (float).
         Edge attribute: weight (float).
         """
-        try:
-            import networkx as nx
-        except Exception as e:
-            raise RuntimeError("networkx is required to export graph; install networkx") from e
-
         G = nx.DiGraph()
         # add nodes
         for layer, count in self.layer_feature_counts.items():
@@ -101,13 +99,13 @@ class FeatureCircuitGraph:
                     index=e.src_feat,
                     normalized_index=0.0,
                 )
-            if not G.has_node((e.tgt_layer, e.tgt_feat)):
-                G.add_node(
-                    (e.tgt_layer, e.tgt_feat),
-                    layer=e.tgt_layer,
-                    index=e.tgt_feat,
-                    normalized_index=0.0,
-                )
+                if not G.has_node((e.tgt_layer, e.tgt_feat)):
+                    G.add_node(
+                        (e.tgt_layer, e.tgt_feat),
+                        layer=e.tgt_layer,
+                        index=e.tgt_feat,
+                        normalized_index=0.0,
+                    )
             G.add_edge((e.src_layer, e.src_feat), (e.tgt_layer, e.tgt_feat), weight=e.weight)
 
         return G
@@ -157,34 +155,81 @@ class SAEFeatureCircuitAnalyzer:
         for layer, sae in self.saes.items():
             key = self.cache_keys.get(layer, layer)
             # collect all timesteps available from ActivationCache
-            try:
-                acts = []
-                for t in cache.timesteps:
-                    a = cache[key, t]
-                    if a is None:
-                        continue
-                    if a.dim() > 1:
-                        a = a.flatten(1)
-                    acts.append(a.detach().cpu())
-                if not acts:
-                    raise KeyError(f"No activations found for layer {layer} using key {key}")
-                acts = torch.cat(acts, dim=0)
-                sae = sae.to(self.device)
-                with torch.no_grad():
-                    feats, _ = sae.encode(acts.to(self.device))
-                clean_acts[layer] = feats.detach().cpu()
-            except Exception as e:
-                # Provide more help: list available cache keys if ActivationCache present
+            acts = []
+            for t in cache.timesteps:
                 try:
-                    avail = cache.component_names
+                    a = cache[key, t]
                 except Exception:
-                    avail = None
-                msg = f"Skipping layer {layer}: {e}"
-                if avail:
-                    msg += f"; available cache components: {avail}"
-                    msg += f"; suggested cache key variants: {[layer, layer + '_out', layer + '.out', 'h', layer + '_hidden']}"
-                warnings.warn(msg)
+                    # missing key for this timestep
+                    continue
+                if a is None:
+                    continue
+                prepared = self._prepare_activation(a, layer, t)
+                if prepared is None:
+                    continue
+                acts.append(prepared.detach().cpu())
+            if not acts:
+                raise KeyError(f"No activations found for layer {layer} using key {key}")
+            acts = torch.cat(acts, dim=0)
+
+            # Some SAE objects may be plain python objects without `.to`.
+            sae_obj = sae
+            if hasattr(sae_obj, "to"):
+                sae_obj = sae_obj.to(self.device)
+            with torch.no_grad():
+                feats, _ = sae_obj.encode(acts.to(self.device))
+            clean_acts[layer] = feats.detach().cpu()
+
         return clean_acts
+
+    def _prepare_activation(self, a: Any, layer: str, timestep: int) -> Optional[torch.Tensor]:
+        """Normalize a raw cache entry into a torch.Tensor with batch dim.
+
+        Returns a tensor or None if the entry should be skipped.
+        """
+        if a is None:
+            return None
+
+        # distributions -> mean
+        if isinstance(a, dist.Distribution):
+            a = a.mean
+
+        # dict entries -> prefer 'tensor' or 'mean', else pick first tensor-like
+        if isinstance(a, dict):
+            if "tensor" in a:
+                a = a["tensor"]
+            elif "mean" in a:
+                a = a["mean"]
+            else:
+                found = None
+                for v in a.values():
+                    if isinstance(v, torch.Tensor):
+                        found = v
+                        break
+                if found is None:
+                    warnings.warn(
+                        f"Skipping timestep {timestep} for layer {layer}: dict cache entry has no tensor-like value"
+                    )
+                    return None
+                a = found
+
+        # coerce array-like to tensor
+        if not isinstance(a, torch.Tensor):
+            try:
+                a = torch.as_tensor(a)
+            except Exception:
+                warnings.warn(
+                    f"Skipping timestep {timestep} for layer {layer}: unsupported activation type {type(a)}"
+                )
+                return None
+
+        # ensure batch dim and flatten non-batch dims
+        if a.dim() == 1:
+            a = a.unsqueeze(0)
+        elif a.dim() > 1:
+            a = a.flatten(1)
+
+        return a
 
     def build_graph(
         self, observations: torch.Tensor, actions: Optional[torch.Tensor] = None
@@ -202,8 +247,12 @@ class SAEFeatureCircuitAnalyzer:
         clean_decoded: Dict[str, torch.Tensor] = {}
         for layer, feats in clean_acts.items():
             sae = self.saes[layer]
+            # move SAE to device if supported
+            sae_obj = sae
+            if hasattr(sae_obj, "to"):
+                sae_obj = sae_obj.to(self.device)
             with torch.no_grad():
-                decoded = sae.decode(feats.to(self.device)).detach().cpu()
+                decoded = sae_obj.decode(feats.to(self.device)).detach().cpu()
             clean_decoded[layer] = decoded
 
         # compute activity rates and active features
@@ -331,8 +380,11 @@ class SAEFeatureCircuitAnalyzer:
                                     hidden_t = cache2[tgt_key, t]
                                 except Exception:
                                     continue
+                                prepared = self._prepare_activation(hidden_t, tgt_layer, t)
+                                if prepared is None:
+                                    continue
                                 with torch.no_grad():
-                                    feats_enc, _ = sae_tgt.encode(hidden_t.to(self.device))
+                                    feats_enc, _ = sae_tgt.encode(prepared.to(self.device))
                                     feats_list.append(feats_enc.detach().cpu())
 
                             if not feats_list:

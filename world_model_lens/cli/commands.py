@@ -322,6 +322,9 @@ def circuits(
     ),
     threshold: float = typer.Option(1e-3, help="Edge threshold for including edges"),
     topk: int = typer.Option(50, help="Top-K outgoing edges to keep per source feature"),
+    output_html: Optional[str] = typer.Option(
+        None, help="Optional path to save interactive HTML (Plotly) output"
+    ),
 ):
     """Build cross-layer SAE feature circuits and save graph to disk.
 
@@ -403,7 +406,6 @@ def circuits(
         graph = analyzer.build_graph(obs)
 
         # export to networkx and save
-        nx = None
         try:
             import networkx as nx
         except Exception:
@@ -437,6 +439,25 @@ def circuits(
 
         console.print(f"[green]Saved circuits graph to:[/green] {output}")
         console.print(f"[green]Saved circuits metadata to:[/green] {meta_path}")
+
+        # Optionally export interactive HTML via Plotly
+        if output_html:
+            try:
+                from world_model_lens.visualization.graph_viz import plot_circuit_graph
+
+                fig_or_ax = plot_circuit_graph(G, interactive=True)
+                # plot_circuit_graph returns a Plotly Figure when interactive=True
+                if hasattr(fig_or_ax, "write_html"):
+                    fig_or_ax.write_html(output_html)
+                    console.print(f"[green]Saved interactive HTML to:[/green] {output_html}")
+                else:
+                    console.print(
+                        f"[yellow]Interactive plotting did not return a Plotly figure.[/yellow]"
+                    )
+            except Exception as e:
+                console.print(
+                    f"[yellow]Could not save interactive HTML (plotly may be missing or error occurred): {e}[/yellow]"
+                )
 
     except Exception as e:
         console.print(f"[red]Error while building circuits:[/red] {e}")
