@@ -30,7 +30,7 @@ def main():
     print("=" * 60)
 
     # Pendulum-v1 obs is (cos θ, sin θ, θ̇) — d_obs=3 and d_action=1 match its spaces exactly.
-    cfg = WorldModelConfig(d_h=128, n_cat=16, n_cls=16, d_action=1, d_obs=3)
+    cfg = WorldModelConfig(d_h=128, n_cat=16, n_cls=16, d_action=1, d_obs=3, encoder_type="mlp")
     adapter = DreamerV3Adapter(cfg)
     wm = HookedWorldModel(adapter=adapter, config=cfg)
     analyzer = BeliefAnalyzer(wm)

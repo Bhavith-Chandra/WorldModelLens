@@ -28,7 +28,7 @@ def main():
     # For demonstration, we'll use DreamerV3 (which has similar components)
     # In a real IJEPA setup, you'd use the IJEPA backend
     # Pendulum-v1 has a 3-dim obs and 1-dim continuous action matching these config values.
-    cfg = WorldModelConfig(d_h=128, n_cat=16, n_cls=16, d_action=1, d_obs=3)
+    cfg = WorldModelConfig(d_h=128, n_cat=16, n_cls=16, d_action=1, d_obs=3, encoder_type="mlp")
     adapter = DreamerV3Adapter(cfg)
     wm = HookedWorldModel(adapter=adapter, config=cfg)
     analyzer = DisentanglementEvaluationSuite()

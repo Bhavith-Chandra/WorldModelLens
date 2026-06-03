@@ -31,7 +31,7 @@ def main():
 
     # Setup world model
     # Pendulum-v1 has a 3-dim obs and 1-dim continuous action matching these config values.
-    cfg = WorldModelConfig(d_h=256, n_cat=32, n_cls=32, d_action=1, d_obs=3)
+    cfg = WorldModelConfig(d_h=256, n_cat=32, n_cls=32, d_action=1, d_obs=3, encoder_type="mlp")
     adapter = DreamerV3Adapter(cfg)
     wm = HookedWorldModel(adapter=adapter, config=cfg, name="aopc_example")
 

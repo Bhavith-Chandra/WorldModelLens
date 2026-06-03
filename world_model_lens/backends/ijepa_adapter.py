@@ -293,7 +293,7 @@ class IJEPAAdapter(BaseModelAdapter, HookedRootModule):
         # Parameters from config
         img_size = getattr(config, "img_size", 224)
         patch_size = getattr(config, "patch_size", 16)
-        embed_dim = getattr(config, "d_embed", 192)
+        embed_dim = getattr(config, "embed_dim", getattr(config, "d_embed", 192))
         depth = getattr(config, "n_layers", 6)
         num_heads = getattr(config, "n_heads", 3)
 
