@@ -55,7 +55,7 @@ def main():
     # Create a simple I-JEPA model for demonstration
     config = WorldModelConfig(
         world_model_family=WorldModelFamily.JEPA,
-        embed_dim=192,
+        d_embed=192,
         n_heads=3,
         n_layers=6,
         patch_size=16,
