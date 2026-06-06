@@ -15,7 +15,24 @@ def get_sample_image(url_or_path: str = "https://raw.githubusercontent.com/pytor
         except Exception as e:
             print(f"Failed to load local image {url_or_path}: {e}")
 
-    # Otherwise, download from URL
+    # Otherwise, download from URL and cache it
+    cache_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "sample_images")
+    os.makedirs(cache_dir, exist_ok=True)
+    
+    # Create a safe filename from the URL
+    safe_name = "".join(c for c in url_or_path.split("/")[-1] if c.isalnum() or c in "._-")
+    if not safe_name:
+        safe_name = str(abs(hash(url_or_path))) + ".jpg"
+        
+    cache_path = os.path.join(cache_dir, safe_name)
+    
+    # If we already have it, load from cache
+    if os.path.exists(cache_path):
+        try:
+            return Image.open(cache_path).convert("RGB")
+        except Exception:
+            pass # Try downloading again if cache is corrupt
+            
     try:
         import requests
         # Wikipedia and some other sites require a descriptive User-Agent to avoid 403 Forbidden
@@ -25,6 +42,11 @@ def get_sample_image(url_or_path: str = "https://raw.githubusercontent.com/pytor
         }
         response = requests.get(url_or_path, headers=headers, timeout=10)
         response.raise_for_status()
+        
+        # Save to cache
+        with open(cache_path, "wb") as f:
+            f.write(response.content)
+            
         return Image.open(io.BytesIO(response.content)).convert("RGB")
     except Exception as e:
         print(f"Failed to download image from {url_or_path}: {e}. Generating synthetic image.")

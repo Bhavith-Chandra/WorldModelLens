@@ -37,10 +37,13 @@ def main():
         default="ijepa_mini.pth",
         help="Path to weights file, or 'meta' to use the official Meta ViT-H weights."
     )
+    parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--n_samples", type=int, default=50, help="Total samples to evaluate.")
+    parser.add_argument("--start_idx", type=int, default=0, help="Starting index for batching evaluation.")
     parser.add_argument("--n_steps", type=int, default=50, help="Integrated Gradients steps.")
     parser.add_argument("--data_dir", type=str, default=None, help="Path to local image dataset.")
     parser.add_argument("--save_plots", action="store_true", help="Save plots to disk instead of showing them.")
+    parser.add_argument("--run_knockout", action="store_true", help="Run Patch Knockout sweep to verify causal claims.")
     args = parser.parse_args()
 
     if args.save_plots:
@@ -116,20 +119,28 @@ def main():
         print("No categorical local images found. Using default URLs.")
         image_sources = [
             "https://raw.githubusercontent.com/pytorch/hub/master/images/dog.jpg",
-            "https://upload.wikimedia.org/wikipedia/commons/3/3a/Cat03.jpg",
-            "https://upload.wikimedia.org/wikipedia/commons/4/47/PNG_transparency_demonstration_1.png",
-            "https://upload.wikimedia.org/wikipedia/commons/e/e0/JPEG_example_JPG_RIP_025.jpg",
-            "https://upload.wikimedia.org/wikipedia/commons/9/9a/Pug_600.jpg"
+            "https://raw.githubusercontent.com/EliSchwartz/imagenet-sample-images/master/n01440764_tench.JPEG",
+            "https://raw.githubusercontent.com/EliSchwartz/imagenet-sample-images/master/n01622779_great_grey_owl.JPEG",
+            "https://raw.githubusercontent.com/EliSchwartz/imagenet-sample-images/master/n02119789_kit_fox.JPEG",
+            "https://raw.githubusercontent.com/EliSchwartz/imagenet-sample-images/master/n02504458_African_elephant.JPEG"
         ]
     
     # Pre-run Validation: Load and verify images ONCE, cache the tensors
     print("Verifying image access and loading tensors...")
-    loaded_images = [] # list of (src, img_tensor)
+    loaded_images = [] # list of (src, img_tensor, category)
+    
+    # Try to extract category from source path if possible
+    def get_category_from_src(src):
+        for cat, paths in category_map.items():
+            if src in paths:
+                return cat
+        return "default"
+        
     for src in image_sources:
         try:
             raw_img = get_sample_image(src)
             img_tensor = preprocess_image(raw_img)
-            loaded_images.append((src, img_tensor))
+            loaded_images.append((src, img_tensor, get_category_from_src(src)))
         except Exception as e:
             print(f"Warning: Could not load {src}: {e}")
     
@@ -141,28 +152,25 @@ def main():
     dataset = []
     samples_per_image = max(1, args.n_samples // len(loaded_images))
     
-    for src, img_tensor in loaded_images:
+    for src, img_tensor, category in loaded_images:
         target_ids = list(range(10, 190, max(1, 190 // samples_per_image)))[:samples_per_image]
         
         for tid in target_ids:
             context_ids, _ = get_ijepa_masks(num_context=80)
             if tid in context_ids:
                 context_ids.remove(tid)
-            dataset.append((img_tensor, context_ids, tid))
+            dataset.append((img_tensor, context_ids, tid, category))
 
-    # Cap to exactly n_samples to ensure cache stays compatible across runs
-    dataset = dataset[:args.n_samples]
-    print(f"Created dataset with {len(dataset)} samples.")
+    # Cap to exactly n_samples and apply start_idx to ensure batching
+    dataset = dataset[args.start_idx : args.start_idx + args.n_samples]
+    print(f"Created dataset with {len(dataset)} samples (from index {args.start_idx}).")
 
     # Initialize evaluator
     evaluator = AttributionEvaluator(k=6)
 
     # Layers to evaluate
     predictor_depth = len(adapter.predictor.blocks)
-    if args.weights == "meta" or predictor_depth > 10:
-        layers_to_test = [predictor_depth // 3, 2 * predictor_depth // 3, predictor_depth - 1]
-    else:
-        layers_to_test = [0, predictor_depth // 2, predictor_depth - 1]
+    layers_to_test = list(range(predictor_depth)) # Full depth sweep
     
     print(f"Predictor depth: {predictor_depth}")
 
@@ -172,8 +180,11 @@ def main():
         print(f"\n--- Loading cached IG results from {cache_path} ---")
         # weights_only=False is required here because the cache contains numpy arrays
         cached_attributions = torch.load(cache_path, weights_only=False)
-        if len(cached_attributions) != len(dataset):
-            print(f"Warning: Cache size ({len(cached_attributions)}) mismatch with current dataset. Re-computing...")
+        if len(cached_attributions) >= args.start_idx + len(dataset):
+            print(f"Slicing cache to match dataset (indices {args.start_idx} to {args.start_idx + len(dataset)}).")
+            cached_attributions = cached_attributions[args.start_idx : args.start_idx + len(dataset)]
+        else:
+            print(f"Warning: Cache size ({len(cached_attributions)}) doesn't contain requested slice up to {args.start_idx + len(dataset)}. Re-computing...")
             cached_attributions = []
     else:
         cached_attributions = []
@@ -184,7 +195,8 @@ def main():
     if not cached_attributions:
         print(f"\n--- Pre-computing Integrated Gradients ({args.n_steps} steps) ---")
         
-        for i, (img_tensor, context_ids, target_id) in enumerate(dataset):
+        for i, item in enumerate(dataset):
+            img_tensor, context_ids, target_id = item[0], item[1], item[2]
             if i % 5 == 0:
                 print(f"  [Progress] Computing IG for sample {i}/{len(dataset)}...")
                 cleanup_memory()
@@ -251,6 +263,52 @@ def main():
         json.dump(results_to_save, f, indent=4)
     print("\nResults saved to attribution_results.json")
 
+    # Property-conditioned failure analysis on the final layer
+    print(f"\n--- Heterogeneous Failure & Category-Conditioned Analysis (Layer {layers_to_test[-1]}) ---")
+    from world_model_lens.analysis.image_property_analyzer import ImagePropertyAnalyzer
+    prop_analyzer = ImagePropertyAnalyzer()
+    
+    final_layer_results = ig_results
+    correlations = final_layer_results["raw_correlations"]
+    
+    # Track properties for strong inversion (Spearman < 0) vs strong alignment (Spearman > 0.5)
+    inversion_props = {"laplacian_variance": [], "rms_contrast": [], "target_patch_std": [], "target_edge_density": []}
+    alignment_props = {"laplacian_variance": [], "rms_contrast": [], "target_patch_std": [], "target_edge_density": []}
+    
+    category_fails = {} # category -> list of corrs
+    
+    for i, item in enumerate(dataset):
+        img_tensor, context_ids, target_id, category = item[0], item[1], item[2], item[3]
+        corr = correlations[i]
+        
+        if category not in category_fails:
+            category_fails[category] = []
+        category_fails[category].append(corr)
+        
+        props = prop_analyzer.compute_properties(img_tensor, target_id)
+        
+        target_dict = None
+        if corr < 0:
+            target_dict = inversion_props
+        elif corr > 0.5:
+            target_dict = alignment_props
+            
+        if target_dict is not None:
+            for k in target_dict.keys():
+                if props[k] != -1.0: # Skip if cv2 not installed
+                    target_dict[k].append(props[k])
+                    
+    print("\nCategory-Conditioned Performance (Spearman):")
+    for cat, corrs in category_fails.items():
+        if len(corrs) > 0:
+            print(f"  Category '{cat}': {np.mean(corrs):.3f} ± {np.std(corrs):.3f} (N={len(corrs)})")
+            
+    print("\nImage Property Correlation with Failure (Inversion vs Alignment):")
+    for k in inversion_props.keys():
+        inv_mean = np.mean(inversion_props[k]) if len(inversion_props[k]) > 0 else 0
+        align_mean = np.mean(alignment_props[k]) if len(alignment_props[k]) > 0 else 0
+        print(f"  {k}: Inversion (Failure) = {inv_mean:.2f} | Alignment (Success) = {align_mean:.2f}")
+
     # Plotting for the final layer
     try:
         import matplotlib.pyplot as plt
@@ -293,6 +351,34 @@ def main():
             save_path="ig_rank_scatter.png" if os.environ.get("SAVE_PLOT") else None
         )
 
+        if args.run_knockout:
+            print("\n--- Running Patch Knockout Verification Sweep ---")
+            from world_model_lens.analysis.ablation_knockout import PatchKnockoutEvaluator
+            
+            # Only run knockout on a subset to save time if dataset is large
+            knockout_dataset = dataset[:10] 
+            knockout_eval = PatchKnockoutEvaluator(adapter, k_values=[1, 3, 5, 10, 20])
+            
+            all_ig_mses = []
+            all_attn_mses = []
+            all_gaps = []
+            
+            for i, item in enumerate(knockout_dataset):
+                img_tensor, context_ids, target_id = item[0], item[1], item[2]
+                attr_scores = cached_attributions[i] if cached_attributions else ig_method.compute(img_tensor, context_ids, target_id)
+                
+                res = knockout_eval.evaluate_sample(
+                    wm, img_tensor, context_ids, target_id, attr_scores, layer_idx=layers_to_test[-1]
+                )
+                all_ig_mses.append(res["ig_mses"])
+                all_attn_mses.append(res["attn_mses"])
+                all_gaps.append(res["knockout_gap"])
+                
+            mean_gaps = np.mean(all_gaps, axis=0)
+            print("Knockout Results (Averaged):")
+            for idx, k in enumerate(knockout_eval.k_values):
+                print(f"  K={k}: Mean IG-Attention MSE Gap: {mean_gaps[idx]:.4f} (Positive means IG correctly found more causal patches)")
+
         if not os.environ.get("SAVE_PLOT"):
             plt.show()
         else:
@@ -300,7 +386,6 @@ def main():
 
     except ImportError:
         print("\nmatplotlib not installed, skipping plots.")
-
 
 if __name__ == "__main__":
     main()

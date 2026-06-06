@@ -456,7 +456,7 @@ class AttributionEvaluator:
         self,
         wm: Any,
         attribution_method: Optional[BaseAttribution],
-        dataset: List[Tuple[torch.Tensor, List[int], int]],
+        dataset: List[Union[Tuple[torch.Tensor, List[int], int], Tuple[torch.Tensor, List[int], int, Any]]],
         alignment_threshold: float = 0.7,
         failure_threshold: float = 0.3,
         layer_idx: int = -1,
@@ -485,7 +485,12 @@ class AttributionEvaluator:
         all_sample_head_results = []
 
         n_samples = len(dataset)
-        for i, (img_tensor, context_ids, target_id) in enumerate(dataset):
+        raw_metadata = []
+        for i, item in enumerate(dataset):
+            img_tensor, context_ids, target_id = item[0], item[1], item[2]
+            meta = item[3] if len(item) > 3 else None
+            raw_metadata.append(meta)
+            
             if i % 5 == 0:
                 print(f"  [Progress] Evaluating sample {i}/{n_samples}...")
             
@@ -542,6 +547,7 @@ class AttributionEvaluator:
             "raw_correlations": correlations,
             "raw_attn_list": raw_attn,
             "raw_attr_list": raw_attr,
+            "raw_metadata": raw_metadata,
             # Per-head stats
             "mean_overlap_across_heads": mean_overlap_heads,
             "mean_var_overlap_heads": mean_var_overlap_heads,
