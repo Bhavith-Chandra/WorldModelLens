@@ -8,6 +8,7 @@ This module provides:
 
 from world_model_lens.sae.trainer import SAETrainer, SAETrainingResult, TopKReLU
 from world_model_lens.sae.evaluator import SAEEvaluator, SAEFeature, SAEFeatureAnalysis
+from world_model_lens.sae.sae_feature_circuits import SAEFeatureCircuitAnalyzer, FeatureCircuitGraph
 
 __all__ = [
     "SAETrainer",
@@ -16,4 +17,6 @@ __all__ = [
     "SAEEvaluator",
     "SAEFeature",
     "SAEFeatureAnalysis",
+    "SAEFeatureCircuitAnalyzer",
+    "FeatureCircuitGraph",
 ]

@@ -29,6 +29,7 @@ from urllib.request import urlopen
 
 import torch
 
+from world_model_lens.backends.dreamerv3 import DreamerV3Adapter
 from world_model_lens.backends.ijepa_adapter import IJEPAAdapter
 from world_model_lens.backends.iris import IRISAdapter
 from world_model_lens.core.config import WorldModelConfig, WorldModelFamily
@@ -423,6 +424,11 @@ class ModelHub:
 
         if model_info.backend == "iris":
             return cls._load_iris(local_path, device=device)
+        if model_info.backend == "dreamerv3":
+            adapter = DreamerV3Adapter.from_checkpoint(local_path)
+            adapter = adapter.to(torch.device(device))
+            adapter.eval()
+            return adapter
         if model_info.backend == "ijepa":
             return cls._load_ijepa(local_path, device=device)
 

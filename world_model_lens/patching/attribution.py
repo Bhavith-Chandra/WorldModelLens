@@ -91,7 +91,7 @@ class DirectRewardAttribution:
 
         # Get reward prediction
         h = torch.zeros_like(latent)
-        reward_pred = self.wm.adapter.predict("reward", h, latent)
+        reward_pred = self.wm.adapter.predict_reward(h, latent)
 
         if reward_pred is None:
             raise ValueError("Model does not have reward head")

@@ -4,7 +4,7 @@ Show effects of patches/counterfactuals.
 """
 
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 import torch
 import numpy as np
 
@@ -197,6 +197,29 @@ class InterventionVisualizer:
 
         return heatmap
 
+
+def hierarchical_layout_from_graph(nx_graph) -> Dict[Tuple, Tuple[float, float]]:
+    """Produce a hierarchical layout for a graph where nodes are (layer, idx).
+
+    x-axis = layer order, y-axis = normalized feature index.
+    """
+    # discover layer ordering
+    layers: Dict[str, List] = {}
+    for node, data in nx_graph.nodes(data=True):
+        layer = data.get("layer", node[0] if isinstance(node, tuple) else str(node))
+        layers.setdefault(layer, []).append(node)
+
+    ordered_layers = list(sorted(layers.keys()))
+    pos: Dict[Tuple, Tuple[float, float]] = {}
+    for xi, layer in enumerate(ordered_layers):
+        nodes = sorted(layers[layer], key=lambda n: n[1] if isinstance(n, tuple) else 0)
+        n = len(nodes)
+        for j, node in enumerate(nodes):
+            y = 1.0 - (j / (n - 1) if n > 1 else 0.5)
+            pos[node] = (float(xi), float(y))
+
+    return pos
+
     def dimension_importance(
         self,
         trajectory: Any,
@@ -217,7 +240,7 @@ class InterventionVisualizer:
 
         for state in trajectory.states:
             s = state.flat
-            importance[:len(s)] += s.abs().detach().cpu().numpy()[:d_z]
+            importance[: len(s)] += s.abs().detach().cpu().numpy()[:d_z]
 
         return importance / max(len(trajectory.states), 1)
 
