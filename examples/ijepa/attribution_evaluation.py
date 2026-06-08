@@ -5,8 +5,13 @@ aggregate metrics for causal sensitivity in I-JEPA patch predictions.
 """
 
 import os
+import sys
 import torch
 import numpy as np
+import gc
+import argparse
+# Ensure local library takes precedence over any stale site-packages install
+sys.path.insert(0, os.path.abspath("."))
 
 from world_model_lens import HookedWorldModel
 from world_model_lens.backends.ijepa_adapter import IJEPAAdapter
@@ -17,7 +22,12 @@ from world_model_lens.analysis.attribution import (
     AttributionEvaluator,
 )
 from image_utils import get_sample_image, preprocess_image, get_ijepa_masks
-import argparse
+
+def cleanup_memory():
+    """Clear CUDA cache and collect garbage."""
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    gc.collect()
 
 def main():
     parser = argparse.ArgumentParser(description="Evaluate I-JEPA patch attribution.")
@@ -27,7 +37,20 @@ def main():
         default="ijepa_mini.pth",
         help="Path to weights file, or 'meta' to use the official Meta ViT-H weights."
     )
+    parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
+    parser.add_argument("--n_samples", type=int, default=50, help="Total samples to evaluate.")
+    parser.add_argument("--start_idx", type=int, default=0, help="Starting index for batching evaluation.")
+    parser.add_argument("--n_steps", type=int, default=50, help="Integrated Gradients steps.")
+    parser.add_argument("--data_dir", type=str, default=None, help="Path to local image dataset.")
+    parser.add_argument("--save_plots", action="store_true", help="Save plots to disk instead of showing them.")
+    parser.add_argument("--run_knockout", action="store_true", help="Run Patch Knockout sweep to verify causal claims.")
     args = parser.parse_args()
+
+    if args.save_plots:
+        os.environ["SAVE_PLOT"] = "1"
+
+    # Initial cleanup
+    cleanup_memory()
 
     print("Initializing model...")
     # Setup config based on weights
@@ -59,57 +82,155 @@ def main():
     wm = HookedWorldModel(adapter, config)
 
     # Prepare validation dataset
-    print("Preparing validation dataset...")
+    print("Preparing validation images...")
+    np.random.seed(42) # Ensure deterministic patch sampling for cache consistency
     
-    # We will use a few different validation images to ensure diversity
-    image_urls = [
-        "https://raw.githubusercontent.com/pytorch/hub/master/images/dog.jpg",
-        "https://upload.wikimedia.org/wikipedia/commons/thumb/3/3a/Cat03.jpg/480px-Cat03.jpg",
-        "https://upload.wikimedia.org/wikipedia/commons/thumb/4/47/PNG_transparency_demonstration_1.png/280px-PNG_transparency_demonstration_1.png",
-        "https://upload.wikimedia.org/wikipedia/commons/thumb/e/e0/JPEG_example_JPG_RIP_025.jpg/250px-JPEG_example_JPG_RIP_025.jpg",
-        "https://upload.wikimedia.org/wikipedia/commons/thumb/9/9a/Pug_600.jpg/300px-Pug_600.jpg"
-    ]
+    # Category-aware local image loading
+    image_sources = []
+    category_map = {} # category -> list of paths
     
-    dataset = []
-    # We want N=50 samples for a fast demo
-    samples_per_image = 50 // len(image_urls)
-    
-    for url in image_urls:
-        raw_img = get_sample_image(url)
-        img_tensor = preprocess_image(raw_img)
+    if args.data_dir and os.path.isdir(args.data_dir):
+        # Scan subdirectories for categories
+        for root, dirs, files in os.walk(args.data_dir):
+            category = os.path.basename(root)
+            if category == os.path.basename(args.data_dir):
+                category = "unspecified"
+            
+            valid_files = [os.path.join(root, f) for f in files if f.lower().endswith(('.jpg', '.jpeg', '.png', '.webp'))]
+            if valid_files:
+                if category not in category_map:
+                    category_map[category] = []
+                category_map[category].extend(valid_files)
         
-        # Pick targets per image to reach N=50
+        n_categories = len(category_map)
+        if n_categories > 0:
+            print(f"Found {n_categories} categories in {args.data_dir}")
+            samples_per_category = max(1, args.n_samples // n_categories)
+            
+            for cat, paths in category_map.items():
+                # Sample evenly from each category
+                sampled_paths = paths[:samples_per_category]
+                image_sources.extend(sampled_paths)
+            
+            print(f"Sampled {len(image_sources)} images across {n_categories} categories.")
+    
+    if not image_sources:
+        # Fallback to current behavior if no categorical data found
+        print("No categorical local images found. Using default URLs.")
+        image_sources = [
+            "https://raw.githubusercontent.com/pytorch/hub/master/images/dog.jpg",
+            "https://raw.githubusercontent.com/EliSchwartz/imagenet-sample-images/master/n01440764_tench.JPEG",
+            "https://raw.githubusercontent.com/EliSchwartz/imagenet-sample-images/master/n01622779_great_grey_owl.JPEG",
+            "https://raw.githubusercontent.com/EliSchwartz/imagenet-sample-images/master/n02119789_kit_fox.JPEG",
+            "https://raw.githubusercontent.com/EliSchwartz/imagenet-sample-images/master/n02504458_African_elephant.JPEG"
+        ]
+    
+    # Pre-run Validation: Load and verify images ONCE, cache the tensors
+    print("Verifying image access and loading tensors...")
+    loaded_images = [] # list of (src, img_tensor, category)
+    
+    # Try to extract category from source path if possible
+    def get_category_from_src(src):
+        for cat, paths in category_map.items():
+            if src in paths:
+                return cat
+        return "default"
+        
+    for src in image_sources:
+        try:
+            raw_img = get_sample_image(src)
+            img_tensor = preprocess_image(raw_img)
+            loaded_images.append((src, img_tensor, get_category_from_src(src)))
+        except Exception as e:
+            print(f"Warning: Could not load {src}: {e}")
+    
+    if not loaded_images:
+        print("CRITICAL: No images accessible. Run will likely fail.")
+        # Hard stop — can't build dataset without images
+        return
+
+    dataset = []
+    samples_per_image = max(1, args.n_samples // len(loaded_images))
+    
+    for src, img_tensor, category in loaded_images:
         target_ids = list(range(10, 190, max(1, 190 // samples_per_image)))[:samples_per_image]
         
         for tid in target_ids:
-            # Get random context masks
             context_ids, _ = get_ijepa_masks(num_context=80)
             if tid in context_ids:
                 context_ids.remove(tid)
-            dataset.append((img_tensor, context_ids, tid))
+            dataset.append((img_tensor, context_ids, tid, category))
 
-    print(f"Created dataset with {len(dataset)} samples.")
+    # Cap to exactly n_samples and apply start_idx to ensure batching
+    dataset = dataset[args.start_idx : args.start_idx + args.n_samples]
+    print(f"Created dataset with {len(dataset)} samples (from index {args.start_idx}).")
 
     # Initialize evaluator
     evaluator = AttributionEvaluator(k=6)
 
     # Layers to evaluate
     predictor_depth = len(adapter.predictor.blocks)
-    if args.weights == "meta" or predictor_depth > 10:
-        layers_to_test = [predictor_depth // 3, 2 * predictor_depth // 3, predictor_depth - 1]
-    else:
-        layers_to_test = [0, predictor_depth // 2, predictor_depth - 1]
+    layers_to_test = list(range(predictor_depth)) # Full depth sweep
     
     print(f"Predictor depth: {predictor_depth}")
 
-    # Evaluate Integrated Gradients
-    print("\n--- Evaluating Integrated Gradients (50 steps) ---")
-    ig_method = IntegratedGradientsAttribution(adapter, n_steps=50)
+    # Evaluate Integrated Gradients (Pre-compute once for caching)
+    cache_path = "ig_cache.pth"
+    if os.path.exists(cache_path):
+        print(f"\n--- Loading cached IG results from {cache_path} ---")
+        # weights_only=False is required here because the cache contains numpy arrays
+        cached_attributions = torch.load(cache_path, weights_only=False)
+        if len(cached_attributions) >= args.start_idx + len(dataset):
+            print(f"Slicing cache to match dataset (indices {args.start_idx} to {args.start_idx + len(dataset)}).")
+            cached_attributions = cached_attributions[args.start_idx : args.start_idx + len(dataset)]
+        else:
+            print(f"Warning: Cache size ({len(cached_attributions)}) doesn't contain requested slice up to {args.start_idx + len(dataset)}. Re-computing...")
+            cached_attributions = []
+    else:
+        cached_attributions = []
+
+    # Instantiate ig_method once — used for both caching and on-the-fly repair during sweep
+    ig_method = IntegratedGradientsAttribution(adapter, n_steps=args.n_steps)
+
+    if not cached_attributions:
+        print(f"\n--- Pre-computing Integrated Gradients ({args.n_steps} steps) ---")
+        
+        for i, item in enumerate(dataset):
+            img_tensor, context_ids, target_id = item[0], item[1], item[2]
+            if i % 5 == 0:
+                print(f"  [Progress] Computing IG for sample {i}/{len(dataset)}...")
+                cleanup_memory()
+                # Save progress to disk every 5 samples
+                torch.save(cached_attributions, cache_path)
+                
+            attr = ig_method.compute(img_tensor, context_ids, target_id)
+            cached_attributions.append(attr)
+        
+        # Final save
+        torch.save(cached_attributions, cache_path)
+        print(f"Done. IG results cached to {cache_path}")
+
+    # Prepare results container
+    results_to_save = {
+        "metadata": {
+            "weights": args.weights,
+            "n_samples": len(dataset),
+            "n_steps": args.n_steps,
+            "predictor_depth": predictor_depth
+        },
+        "layer_results": {}
+    }
+
+    print("\n--- Running Multi-Layer Sweep (using cached IG) ---")
     
     for layer_idx in layers_to_test:
         print(f"\n>>> Results for Predictor Layer {layer_idx} <<<")
         ig_results = evaluator.evaluate_dataset(
-            wm, ig_method, dataset, alignment_threshold=0.6, failure_threshold=0.3, layer_idx=layer_idx
+            wm, ig_method, dataset, 
+            alignment_threshold=0.6, 
+            failure_threshold=0.3, 
+            layer_idx=layer_idx,
+            precomputed_attributions=cached_attributions
         )
 
         print(f"  N: {ig_results['n_samples']}")
@@ -125,6 +246,68 @@ def main():
         print(f"  Var O_k across heads: {ig_results['mean_var_overlap_heads']:.4f}")
         print(f"  Mean Spearman across heads: {ig_results['mean_corr_across_heads']:.3f}")
         print(f"  Var Spearman across heads: {ig_results['mean_var_corr_heads']:.4f}")
+
+        # Record results for this layer
+        results_to_save["layer_results"][str(layer_idx)] = {
+            "mean_overlap": float(ig_results['mean_overlap']),
+            "mean_spearman": float(ig_results['mean_spearman']),
+            "failure_rate": float(ig_results['failure_rate']),
+            "negative_spearman_rate": float(ig_results['negative_spearman_rate']),
+            "mean_overlap_across_heads": float(ig_results['mean_overlap_across_heads']),
+            "mean_corr_across_heads": float(ig_results['mean_corr_across_heads'])
+        }
+
+    # Save all layers to disk
+    import json
+    with open("attribution_results.json", "w") as f:
+        json.dump(results_to_save, f, indent=4)
+    print("\nResults saved to attribution_results.json")
+
+    # Property-conditioned failure analysis on the final layer
+    print(f"\n--- Heterogeneous Failure & Category-Conditioned Analysis (Layer {layers_to_test[-1]}) ---")
+    from world_model_lens.analysis.image_property_analyzer import ImagePropertyAnalyzer
+    prop_analyzer = ImagePropertyAnalyzer()
+    
+    final_layer_results = ig_results
+    correlations = final_layer_results["raw_correlations"]
+    
+    # Track properties for strong inversion (Spearman < 0) vs strong alignment (Spearman > 0.5)
+    inversion_props = {"laplacian_variance": [], "rms_contrast": [], "target_patch_std": [], "target_edge_density": []}
+    alignment_props = {"laplacian_variance": [], "rms_contrast": [], "target_patch_std": [], "target_edge_density": []}
+    
+    category_fails = {} # category -> list of corrs
+    
+    for i, item in enumerate(dataset):
+        img_tensor, context_ids, target_id, category = item[0], item[1], item[2], item[3]
+        corr = correlations[i]
+        
+        if category not in category_fails:
+            category_fails[category] = []
+        category_fails[category].append(corr)
+        
+        props = prop_analyzer.compute_properties(img_tensor, target_id)
+        
+        target_dict = None
+        if corr < 0:
+            target_dict = inversion_props
+        elif corr > 0.5:
+            target_dict = alignment_props
+            
+        if target_dict is not None:
+            for k in target_dict.keys():
+                if props[k] != -1.0: # Skip if cv2 not installed
+                    target_dict[k].append(props[k])
+                    
+    print("\nCategory-Conditioned Performance (Spearman):")
+    for cat, corrs in category_fails.items():
+        if len(corrs) > 0:
+            print(f"  Category '{cat}': {np.mean(corrs):.3f} ± {np.std(corrs):.3f} (N={len(corrs)})")
+            
+    print("\nImage Property Correlation with Failure (Inversion vs Alignment):")
+    for k in inversion_props.keys():
+        inv_mean = np.mean(inversion_props[k]) if len(inversion_props[k]) > 0 else 0
+        align_mean = np.mean(alignment_props[k]) if len(alignment_props[k]) > 0 else 0
+        print(f"  {k}: Inversion (Failure) = {inv_mean:.2f} | Alignment (Success) = {align_mean:.2f}")
 
     # Plotting for the final layer
     try:
@@ -168,6 +351,34 @@ def main():
             save_path="ig_rank_scatter.png" if os.environ.get("SAVE_PLOT") else None
         )
 
+        if args.run_knockout:
+            print("\n--- Running Patch Knockout Verification Sweep ---")
+            from world_model_lens.analysis.ablation_knockout import PatchKnockoutEvaluator
+            
+            # Only run knockout on a subset to save time if dataset is large
+            knockout_dataset = dataset[:10] 
+            knockout_eval = PatchKnockoutEvaluator(adapter, k_values=[1, 3, 5, 10, 20])
+            
+            all_ig_mses = []
+            all_attn_mses = []
+            all_gaps = []
+            
+            for i, item in enumerate(knockout_dataset):
+                img_tensor, context_ids, target_id = item[0], item[1], item[2]
+                attr_scores = cached_attributions[i] if cached_attributions else ig_method.compute(img_tensor, context_ids, target_id)
+                
+                res = knockout_eval.evaluate_sample(
+                    wm, img_tensor, context_ids, target_id, attr_scores, layer_idx=layers_to_test[-1]
+                )
+                all_ig_mses.append(res["ig_mses"])
+                all_attn_mses.append(res["attn_mses"])
+                all_gaps.append(res["knockout_gap"])
+                
+            mean_gaps = np.mean(all_gaps, axis=0)
+            print("Knockout Results (Averaged):")
+            for idx, k in enumerate(knockout_eval.k_values):
+                print(f"  K={k}: Mean IG-Attention MSE Gap: {mean_gaps[idx]:.4f} (Positive means IG correctly found more causal patches)")
+
         if not os.environ.get("SAVE_PLOT"):
             plt.show()
         else:
@@ -175,7 +386,6 @@ def main():
 
     except ImportError:
         print("\nmatplotlib not installed, skipping plots.")
-
 
 if __name__ == "__main__":
     main()
