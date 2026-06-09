@@ -238,7 +238,7 @@ class TemporalPatcher:
             if clean_obs_seq is not None and clean_action_seq is not None:
                 obs_seq = self._ensure_device(clean_obs_seq)
                 action_seq = self._ensure_device(clean_action_seq)
-                patched_traj, patched_cache = self.wm.run_with_cache(obs_seq, action_seq)
+                patched_traj, _, patched_cache = self.wm.run_with_cache(obs_seq, action_seq)
                 patched_metric = self.compute_metric_from_cache(
                     patched_cache, patch_component, metric_fn
                 )
@@ -293,7 +293,7 @@ class TemporalPatcher:
         clean_obs = self._ensure_device(clean_obs_seq)
         clean_actions = self._ensure_device(clean_action_seq)
 
-        clean_traj, clean_cache = self.wm.run_with_cache(clean_obs, clean_actions)
+        clean_traj, _, clean_cache = self.wm.run_with_cache(clean_obs, clean_actions)
         clean_metric = self.compute_metric_from_trajectory(clean_traj, metric_fn)
 
         corrupted_cache = ActivationCache()
@@ -326,7 +326,7 @@ class TemporalPatcher:
         self.wm.add_hook(hook)
 
         try:
-            corrupted_traj, _ = self.wm.run_with_cache(clean_obs, clean_actions)
+            corrupted_traj, _, _ = self.wm.run_with_cache(clean_obs, clean_actions)
             corrupted_metric = self.compute_metric_from_trajectory(corrupted_traj, metric_fn)
         finally:
             self.wm.clear_hooks()
@@ -341,7 +341,7 @@ class TemporalPatcher:
         self.wm.add_hook(hook2)
 
         try:
-            patched_traj, _ = self.wm.run_with_cache(clean_obs, clean_actions)
+            patched_traj, _, _ = self.wm.run_with_cache(clean_obs, clean_actions)
             patched_metric = self.compute_metric_from_trajectory(patched_traj, metric_fn)
         finally:
             self.wm.clear_hooks()

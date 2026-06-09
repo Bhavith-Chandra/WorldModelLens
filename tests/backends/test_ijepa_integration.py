@@ -29,7 +29,7 @@ def test_ijepa_final_integration():
         
         # 4. Test run_with_cache including target_encoding
         obs = torch.randn(2, 3, 224, 224)
-        traj, cache = wm.run_with_cache(obs)
+        _, _, cache = wm.run_with_cache(obs)
         
         # Verify cache points
         assert "target_encoding" in cache.component_names

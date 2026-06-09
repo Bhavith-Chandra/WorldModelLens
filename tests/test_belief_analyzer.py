@@ -64,7 +64,7 @@ class TestBeliefAnalyzer:
 
         # Run with cache
         with torch.no_grad():
-            _, cache = wm.run_with_cache(obs)
+            _, _, cache = wm.run_with_cache(obs)
 
         result = analyzer.surprise_timeline(cache)
 

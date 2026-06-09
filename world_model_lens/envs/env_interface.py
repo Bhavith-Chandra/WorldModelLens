@@ -147,7 +147,7 @@ class EpisodeCollector:
             metadata={"env_info": info, "total_reward": sum(reward_list)},
         )
 
-        traj, cache = self.wm.run_with_cache(obs_seq, action_seq)
+        _, traj, cache = self.wm.run_with_cache(obs_seq, action_seq)
 
         return traj, cache, {"total_reward": sum(reward_list), "length": t}
 

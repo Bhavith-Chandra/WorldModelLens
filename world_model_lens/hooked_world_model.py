@@ -12,7 +12,6 @@ if TYPE_CHECKING:
     from world_model_lens.core.world_state import WorldState, WorldTrajectory, WorldDynamics
     from world_model_lens.core.world_trajectory import WorldTrajectory
     from world_model_lens.core.config import WorldModelConfig
-    from world_model_lens.core.latent_state import LatentState
 
 from world_model_lens.core.hooks import HookContext, HookPoint, HookRegistry
 from world_model_lens.core.activation_cache import ActivationCache
@@ -21,6 +20,7 @@ from world_model_lens.core.world_trajectory import WorldTrajectory
 from world_model_lens.backends.base_adapter import WorldModelCapabilities
 from world_model_lens.core.hook_cache import HookCacheManager
 from world_model_lens.core.forward_runner import ForwardRunner
+from world_model_lens.core.latent_state import LatentState
 from world_model_lens.core.latent_trajectory import LatentTrajectory
 from world_model_lens.core.types import WorldModelFamily
 
@@ -54,8 +54,10 @@ class HookedWorldModel:
         >>>
         >>> # Wrap and use
         >>> wm = HookedWorldModel(adapter=MyModel(config), config=config)
-        >>> traj, cache = wm.run_with_cache(observations)
-        >>> imagined = wm.imagine(start_state=traj.states[0], horizon=20)
+        >>> world_traj, latent_traj, cache = wm.run_with_cache(observations)
+        >>> imagined_world, imagined_latent = wm.imagine(
+        ...     start_state=latent_traj.states[0], horizon=20
+        ... )
     """
 
     def __init__(
@@ -295,7 +297,7 @@ class HookedWorldModel:
         names_filter: Optional[set] = None,
         device: Optional[torch.device] = None,
         store_logits: bool = True,
-    ) -> Tuple[WorldTrajectory, ActivationCache]:
+    ) -> Tuple[WorldTrajectory, LatentTrajectory, ActivationCache]:
         """Run forward pass with full activation caching.
 
         This method is backend-agnostic. It works with any world model
@@ -313,7 +315,7 @@ class HookedWorldModel:
             store_logits: Whether to store logits (for probing)
 
         Returns:
-            Tuple of (WorldTrajectory, ActivationCache)
+            Tuple of (WorldTrajectory, LatentTrajectory, ActivationCache)
         """
         # normalize names_filter to a set for efficient membership tests
         # normalize names_filter to a set[str] for efficient membership checks
@@ -321,7 +323,8 @@ class HookedWorldModel:
 
         T = observations.shape[0]
         cache = ActivationCache()
-        states = []
+        world_states = []
+        latent_states = []
 
         caps = self._get_capabilities()
 
@@ -351,11 +354,12 @@ class HookedWorldModel:
                 names_filter,
                 no_grad=True,
             )
-            traj = self._latent_traj_to_world_traj(latent_traj)
+            world_traj = self._latent_traj_to_world_traj(latent_traj)
             if device:
-                traj = traj.to_device(device)
+                world_traj = world_traj.to_device(device)
+                latent_traj = latent_traj.to_device(device)
                 cache = cache.to_device(device)
-            return traj, cache
+            return world_traj, latent_traj, cache
 
         init_result = self.adapter.initial_state(batch_size=1, device=observations.device)
         if isinstance(init_result, tuple):
@@ -377,7 +381,7 @@ class HookedWorldModel:
             if actions is not None and t < len(actions):
                 action = actions[t]
 
-            hook_ctx = HookContext(timestep=t, component="state", trajectory_so_far=states)
+            hook_ctx = HookContext(timestep=t, component="state", trajectory_so_far=latent_states)
             # apply hooks and cache via central helper
             state = self._apply_and_cache("state", t, state, hook_ctx, cache, names_filter)
 
@@ -392,7 +396,9 @@ class HookedWorldModel:
             )
             posterior = posterior.squeeze(0)
 
-            hook_ctx_z = HookContext(timestep=t, component="z_posterior", trajectory_so_far=states)
+            hook_ctx_z = HookContext(
+                timestep=t, component="z_posterior", trajectory_so_far=latent_states
+            )
             posterior = self._apply_and_cache(
                 "z_posterior", t, posterior, hook_ctx_z, cache, names_filter
             )
@@ -413,7 +419,7 @@ class HookedWorldModel:
                 "z_prior",
                 t,
                 prior,
-                HookContext(timestep=t, component="z_prior", trajectory_so_far=states),
+                HookContext(timestep=t, component="z_prior", trajectory_so_far=latent_states),
                 cache,
                 names_filter,
             )
@@ -422,7 +428,9 @@ class HookedWorldModel:
                     "observation",
                     t,
                     obs_encoding,
-                    HookContext(timestep=t, component="observation", trajectory_so_far=states),
+                    HookContext(
+                        timestep=t, component="observation", trajectory_so_far=latent_states
+                    ),
                     cache,
                     names_filter,
                 )
@@ -437,7 +445,7 @@ class HookedWorldModel:
                 manager.apply_kv_hooks(
                     cache,
                     t,
-                    HookContext(timestep=t, component="kv_cache", trajectory_so_far=states),
+                    HookContext(timestep=t, component="kv_cache", trajectory_so_far=latent_states),
                 )
 
             # Check for optional target encoder (e.g. for I-JEPA/JEPA models)
@@ -460,7 +468,9 @@ class HookedWorldModel:
                         t,
                         target_encoding,
                         HookContext(
-                            timestep=t, component="target_encoding", trajectory_so_far=states
+                            timestep=t,
+                            component="target_encoding",
+                            trajectory_so_far=latent_states,
                         ),
                         cache,
                         names_filter,
@@ -478,7 +488,9 @@ class HookedWorldModel:
                             "reward",
                             t,
                             reward_pred.squeeze(0),
-                            HookContext(timestep=t, component="reward", trajectory_so_far=states),
+                            HookContext(
+                                timestep=t, component="reward", trajectory_so_far=latent_states
+                            ),
                             cache,
                             names_filter,
                         )
@@ -508,7 +520,9 @@ class HookedWorldModel:
                             "value",
                             t,
                             value_pred.squeeze(0),
-                            HookContext(timestep=t, component="value", trajectory_so_far=states),
+                            HookContext(
+                                timestep=t, component="value", trajectory_so_far=latent_states
+                            ),
                             cache,
                             names_filter,
                         )
@@ -527,7 +541,7 @@ class HookedWorldModel:
                     "kl",
                     t,
                     kl,
-                    HookContext(timestep=t, component="kl", trajectory_so_far=states),
+                    HookContext(timestep=t, component="kl", trajectory_so_far=latent_states),
                     cache,
                     names_filter,
                 )
@@ -544,7 +558,9 @@ class HookedWorldModel:
                             t,
                             recon.squeeze(0),
                             HookContext(
-                                timestep=t, component="reconstruction", trajectory_so_far=states
+                                timestep=t,
+                                component="reconstruction",
+                                trajectory_so_far=latent_states,
                             ),
                             cache,
                             names_filter,
@@ -554,7 +570,9 @@ class HookedWorldModel:
 
             action_for_transition = action if caps.uses_actions else None
             if action_for_transition is not None:
-                hook_ctx_a = HookContext(timestep=t, component="action", trajectory_so_far=states)
+                hook_ctx_a = HookContext(
+                    timestep=t, component="action", trajectory_so_far=latent_states
+                )
                 action_for_transition = self._hooks.apply(
                     "action", t, action_for_transition, hook_ctx_a
                 )
@@ -571,10 +589,10 @@ class HookedWorldModel:
             transition_ctx = HookContext(
                 timestep=t,
                 component="transition",
-                trajectory_so_far=states,
+                trajectory_so_far=latent_states,
                 metadata={
                     "s_t": state.clone(),  # Current state after transition
-                    "s_prev": states[-1].state if states else None,  # Previous state
+                    "s_prev": world_states[-1].state if world_states else None,  # Previous state
                     "a_t": action_for_transition,  # Action used
                     "z_t": posterior,  # Latent encoding
                 },
@@ -591,7 +609,9 @@ class HookedWorldModel:
                     temperature=None,
                 )
 
-            state_obj = WorldState(
+            # Build both public trajectory views at the same timestep so
+            # environment-facing and model-facing consumers stay aligned.
+            world_state = WorldState(
                 state=state.clone(),
                 timestep=t,
                 action=action_for_state,
@@ -600,21 +620,37 @@ class HookedWorldModel:
                 value_pred=value_pred.squeeze(0).clone() if value_pred is not None else None,
                 obs_encoding=obs_encoding.clone() if obs_encoding is not None else None,
             )
-            states.append(state_obj)
+            world_states.append(world_state)
+
+            latent_state = LatentState(
+                h_t=state.clone(),
+                z_posterior=posterior.clone(),
+                z_prior=prior.clone(),
+                timestep=t,
+                action=action_for_state.clone() if action_for_state is not None else None,
+                reward_pred=reward_pred.squeeze(0).clone() if reward_pred is not None else None,
+                cont_pred=None,
+                value_pred=value_pred.squeeze(0).clone() if value_pred is not None else None,
+                actor_logits=None,
+                obs_encoding=obs_encoding.clone() if obs_encoding is not None else None,
+            )
+            latent_states.append(latent_state)
 
             if z_current is not None:
                 z_current = posterior
 
-        traj = WorldTrajectory(
-            states=states,
+        world_traj = WorldTrajectory(
+            states=world_states,
             source="real",
         )
+        latent_traj = LatentTrajectory(states=latent_states, env_name=self.name, imagined=False)
 
         if device:
-            traj = traj.to_device(device)
+            world_traj = world_traj.to_device(device)
+            latent_traj = latent_traj.to_device(device)
             cache = cache.to_device(device)
 
-        return traj, cache
+        return world_traj, latent_traj, cache
 
     def run_with_hooks(
         self,
@@ -643,37 +679,46 @@ class HookedWorldModel:
         # and cleaned up automatically, even if the forward pass raises.
         # coerce names_filter absent -> None handled by run_with_cache
         with self._hooks.temp_hooks(list(fwd_hooks) if fwd_hooks else []):
-            traj, cache = self.run_with_cache(observations, actions)
+            world_traj, _, cache = self.run_with_cache(observations, actions)
 
         if return_cache:
-            return traj, cache
-        return traj
+            return world_traj, cache
+        return world_traj
 
     def imagine(
         self,
-        start_state: WorldState,
+        start_state: Union[WorldState, LatentState],
         actions: Optional[torch.Tensor] = None,
         horizon: int = 50,
         temperature: float = 1.0,
-    ) -> WorldTrajectory:
+    ) -> Tuple[WorldTrajectory, LatentTrajectory]:
         """Imagine forward from a starting state using dynamics model.
 
         Works with ANY world model - RL and non-RL. For non-RL models,
         actions are ignored.
 
         Args:
-            start_state: Starting WorldState
+            start_state: Starting WorldState or LatentState
             actions: Optional action sequence to execute (ignored for non-RL models)
             horizon: Number of imagination steps
             temperature: Sampling temperature for discrete states
 
         Returns:
-            Imagined WorldTrajectory
+            Tuple of (WorldTrajectory, LatentTrajectory)
         """
         caps = self._get_capabilities()
-        state = start_state.state.clone()
-        z = start_state.obs_encoding if start_state.obs_encoding is not None else state
-        states = [start_state]
+        # Accept either world-facing or latent-facing start states so
+        # callers can branch from the representation they already have.
+        if isinstance(start_state, LatentState):
+            state = start_state.h_t.clone()
+            z = start_state.z_posterior.clone()
+            start_timestep = start_state.timestep
+        else:
+            state = start_state.state.clone()
+            z = start_state.obs_encoding if start_state.obs_encoding is not None else state
+            start_timestep = start_state.timestep
+        world_states = []
+        latent_states = []
 
         for t in range(horizon):
             action = None
@@ -734,9 +779,9 @@ class HookedWorldModel:
 
             # Apply transition hook for causality analysis
             transition_ctx = HookContext(
-                timestep=t + start_state.timestep + 1,
+                timestep=t + start_timestep + 1,
                 component="transition",
-                trajectory_so_far=states,
+                trajectory_so_far=latent_states,
                 metadata={
                     "s_t": state.clone(),  # Current state after transition
                     "s_prev": prev_state,  # Previous state
@@ -745,7 +790,7 @@ class HookedWorldModel:
                 },
             )
             state = self._hooks.apply(
-                "transition", t + start_state.timestep + 1, state, transition_ctx
+                "transition", t + start_timestep + 1, state, transition_ctx
             )
 
             reward_pred = None
@@ -756,20 +801,37 @@ class HookedWorldModel:
                 except NotImplementedError:
                     pass
 
-            state_obj = WorldState(
+            world_state = WorldState(
                 state=state.clone(),
-                timestep=t + start_state.timestep + 1,
+                timestep=t + start_timestep + 1,
                 action=action.clone() if action is not None else None,
                 action_source=action_source,
                 reward_pred=reward_pred,
             )
-            states.append(state_obj)
+            world_states.append(world_state)
 
-        return WorldTrajectory(
-            states=states[1:],
+            latent_state = LatentState(
+                h_t=state.clone(),
+                z_posterior=z.clone(),
+                z_prior=z.clone(),
+                timestep=t + start_timestep + 1,
+                action=action.clone() if action is not None else None,
+                reward_pred=reward_pred.clone() if reward_pred is not None else None,
+            )
+            latent_states.append(latent_state)
+
+        world_traj = WorldTrajectory(
+            states=world_states,
             source="imagined",
-            fork_point=start_state.timestep,
+            fork_point=start_timestep,
         )
+        latent_traj = LatentTrajectory(
+            states=latent_states,
+            env_name=self.name,
+            imagined=True,
+            fork_point=start_timestep,
+        )
+        return world_traj, latent_traj
 
     def add_hook(self, hook: HookPoint) -> None:
         """Add a persistent hook."""

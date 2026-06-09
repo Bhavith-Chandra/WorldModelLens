@@ -143,7 +143,7 @@ class ImaginationBrancher:
         branches = []
 
         for actions in action_sequences:
-            imagined = self.wm.imagine(
+            _, imagined = self.wm.imagine(
                 start_state=start_state,
                 actions=actions,
                 horizon=horizon,
@@ -186,7 +186,7 @@ class ImaginationBrancher:
         """
         start_state = real_traj.states[fork_at]
 
-        original = self.wm.imagine(
+        _, original = self.wm.imagine(
             start_state=start_state,
             actions=action_sequence,
             horizon=horizon,
@@ -198,7 +198,7 @@ class ImaginationBrancher:
         if z_replacement is not None:
             manipulated_state.z_posterior = z_replacement.clone()
 
-        manipulated = self.wm.imagine(
+        _, manipulated = self.wm.imagine(
             start_state=manipulated_state,
             actions=action_sequence,
             horizon=horizon,
@@ -281,7 +281,7 @@ class ImaginationBrancher:
         trajectories = []
 
         for _ in range(n_samples):
-            traj = self.wm.imagine(
+            _, traj = self.wm.imagine(
                 start_state=start_state,
                 horizon=horizon,
                 temperature=temperature,

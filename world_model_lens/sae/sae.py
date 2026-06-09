@@ -544,7 +544,7 @@ class SAELayer:
         Returns:
             Tuple of (trajectory, cache)
         """
-        traj, cache = self.wm.run_with_cache(observations, actions)
+        _, traj, cache = self.wm.run_with_cache(observations, actions)
 
         feature_activations = self.get_feature_activations(cache)
         self._feature_cache = feature_activations

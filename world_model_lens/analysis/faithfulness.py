@@ -102,7 +102,7 @@ class FaithfulnessAnalyzer:
         Returns:
             AOPCResult with score and perturbation data.
         """
-        _, cache = self.wm.run_with_cache(observations, actions)
+        _, _, cache = self.wm.run_with_cache(observations, actions)
 
         original = cache[target_component]
 
@@ -158,7 +158,7 @@ class FaithfulnessAnalyzer:
                 return_cache=True,
             )
             if isinstance(hooked_result, tuple):
-                _, cache_ablated = hooked_result
+                cache_ablated = hooked_result[-1]
             else:
                 cache_ablated = None
 
@@ -256,7 +256,7 @@ class FaithfulnessAnalyzer:
         Returns:
             List of PerturbationResult for each K.
         """
-        _, cache = self.wm.run_with_cache(observations, actions)
+        _, _, cache = self.wm.run_with_cache(observations, actions)
 
         try:
             original = cache[target_component]
@@ -307,7 +307,7 @@ class FaithfulnessAnalyzer:
                 return_cache=True,
             )
             if isinstance(hooked_result, tuple):
-                _, cache_ablated = hooked_result
+                cache_ablated = hooked_result[-1]
             else:
                 cache_ablated = None
 

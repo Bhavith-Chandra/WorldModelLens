@@ -17,7 +17,6 @@ import matplotlib.pyplot as plt
 
 from world_model_lens import HookedWorldModel, WorldModelConfig
 from world_model_lens.backends.dreamerv3 import DreamerV3Adapter
-from world_model_lens.envs import GymnasiumAdapter
 from world_model_lens.analysis import FaithfulnessAnalyzer
 
 OUTPUT_DIR = pathlib.Path("assets/examples")
@@ -35,24 +34,12 @@ def main():
     adapter = DreamerV3Adapter(cfg)
     wm = HookedWorldModel(adapter=adapter, config=cfg, name="aopc_example")
 
-    # AOPC measures faithfulness of latent representations — perturbation curves computed on
-    # random noise have no ground truth to be faithful to.
-    T = 20
-    env = GymnasiumAdapter("Pendulum-v1")
-    obs, _ = env.reset(seed=42)
-    obs_list, action_list = [], []
-    for _ in range(T):
-        action = env.action_space.sample()
-        obs_list.append(torch.from_numpy(obs).float())
-        action_list.append(torch.from_numpy(action).float())
-        result = env.step(action)
-        obs = result.observation
-        if result.done:
-            break
-    env.close()
-    obs_seq = torch.stack(obs_list)
-    action_seq = torch.stack(action_list)
-    print(f"Collected {len(obs_list)} steps from Pendulum-v1: obs={obs_seq.shape}, actions={action_seq.shape}")
+    # Generate data
+    T, C, H, W = 20, 3, 64, 64
+    obs_seq = torch.randn(T, C, H, W)
+    action_seq = torch.randn(T, cfg.d_action)
+
+    print(f"Created data: obs={obs_seq.shape}, actions={action_seq.shape}")
 
     # Initialize analyzer
     analyzer = FaithfulnessAnalyzer(wm)

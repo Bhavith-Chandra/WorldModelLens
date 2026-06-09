@@ -18,7 +18,6 @@ from world_model_lens.causal import (
     Intervention,
     rollout_comparison,
 )
-from world_model_lens.envs import GymnasiumAdapter
 from world_model_lens.visualization import plot_causal_engine_dashboard
 
 OUTPUT_DIR = pathlib.Path("assets/examples")
@@ -36,22 +35,8 @@ def main():
     wm = HookedWorldModel(adapter=adapter, config=cfg)
 
     T = 15
-    # Counterfactual interventions operate on latent states, so the baseline trajectory
-    # must come from a real environment to give those interventions causal meaning.
-    env = GymnasiumAdapter("Pendulum-v1")
-    obs, _ = env.reset(seed=42)
-    obs_list, action_list = [], []
-    for _ in range(T):
-        action = env.action_space.sample()
-        obs_list.append(torch.from_numpy(obs).float())
-        action_list.append(torch.from_numpy(action).float())
-        result = env.step(action)
-        obs = result.observation
-        if result.done:
-            break
-    env.close()
-    obs_seq = torch.stack(obs_list)
-    action_seq = torch.stack(action_list)
+    obs_seq = torch.randn(T, 3, 64, 64)
+    action_seq = torch.randn(T, cfg.d_action)
 
     engine = CounterfactualEngine(wm)
 

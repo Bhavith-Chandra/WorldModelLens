@@ -64,7 +64,7 @@ def test_kv_hook_creates_entries():
     hook = HookPoint(name="kv_cache", fn=create_kv, timestep=1)
     wm.add_hook(hook)
 
-    traj, cache = wm.run_with_cache(obs)
+    _, _, cache = wm.run_with_cache(obs)
 
     assert torch.equal(cache.get_kv(0, "k", 1), torch.tensor([1.0, 1.0]))
     assert torch.equal(cache.get_kv(0, "v", 1), torch.tensor([1.5, 1.5]))
@@ -86,7 +86,7 @@ def test_kv_hook_modifies_past_entry():
     wm.add_hook(HookPoint(name="kv_cache", fn=create_kv, timestep=1))
     wm.add_hook(HookPoint(name="kv_cache", fn=modify_prev, timestep=2))
 
-    traj, cache = wm.run_with_cache(obs)
+    _, _, cache = wm.run_with_cache(obs)
 
     # created at t=1 then modified at t=2
     assert torch.equal(cache.get_kv(0, "k", 1), torch.tensor([10.0, 10.0]))
@@ -105,7 +105,7 @@ def test_kv_hook_removes_entry():
     wm.add_hook(HookPoint(name="kv_cache", fn=create_kv, timestep=1))
     wm.add_hook(HookPoint(name="kv_cache", fn=delete_prev, timestep=2))
 
-    traj, cache = wm.run_with_cache(obs)
+    _, _, cache = wm.run_with_cache(obs)
 
     # entry at t=1 should have been deleted by hook at t=2
     assert cache.get_kv(0, "k", 1, None) is None
@@ -124,7 +124,7 @@ def test_kv_hook_time_slice_applies_across_range():
     # time_slice from 1 (inclusive) to 4 (exclusive) should fire at 1,2,3
     wm.add_hook(HookPoint(name="kv_cache", fn=slice_hook, time_slice=[1, 4]))
 
-    traj, cache = wm.run_with_cache(obs)
+    _, _, cache = wm.run_with_cache(obs)
 
     assert calls == [1, 2, 3]
     for t in calls:

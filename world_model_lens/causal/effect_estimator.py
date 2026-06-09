@@ -177,7 +177,7 @@ class CausalEffectEstimator:
         """Run baseline without intervention."""
         outcomes = []
         for _ in range(self.num_samples):
-            traj, cache = self.wm.run_with_cache(observations, actions)
+            traj, _, cache = self.wm.run_with_cache(observations, actions)
             outcome = self._extract_target(traj, cache, "reward_pred")
             outcomes.append(outcome)
         return outcomes
@@ -374,7 +374,7 @@ class CausalEffectEstimator:
         if observations is None:
             observations = torch.randn(20, 64, 64, 3)
 
-        traj, cache = self.wm.run_with_cache(observations)
+        traj, _, cache = self.wm.run_with_cache(observations)
         z_sample = cache.get(("z_posterior", 0))
         if z_sample is None:
             z_sample = traj.states[0].state

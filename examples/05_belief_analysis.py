@@ -19,7 +19,6 @@ OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 from world_model_lens import HookedWorldModel, WorldModelConfig
 from world_model_lens.backends.dreamerv3 import DreamerV3Adapter
-from world_model_lens.envs import GymnasiumAdapter
 from world_model_lens.analysis.belief_analyzer import BeliefAnalyzer
 from world_model_lens.visualization import plot_belief_dashboard
 
@@ -40,22 +39,8 @@ def main():
 
     print("\n[1] Running forward pass...")
 
-    # Real observations let the belief analyzer detect genuine structure in the trajectory —
-    # surprise peaks and concept alignment are meaningless on i.i.d. Gaussian noise.
-    env = GymnasiumAdapter("Pendulum-v1")
-    obs, _ = env.reset(seed=42)
-    obs_list, action_list = [], []
-    for _ in range(T):
-        action = env.action_space.sample()
-        obs_list.append(torch.from_numpy(obs).float())
-        action_list.append(torch.from_numpy(action).float())
-        result = env.step(action)
-        obs = result.observation
-        if result.done:
-            break
-    env.close()
-    obs_seq = torch.stack(obs_list)
-    action_seq = torch.stack(action_list)
+    obs_seq = torch.randn(T, 3, 64, 64)
+    action_seq = torch.randn(T, cfg.d_action)
 
     traj, cache = wm.run_with_cache(obs_seq, action_seq)
 

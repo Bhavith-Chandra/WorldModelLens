@@ -97,9 +97,10 @@ def test_hooked_world_model_routes_jepa_through_forward_runner():
     wm = HookedWorldModel(adapter=adapter, config=config)
 
     obs = torch.randn(1, 3, 224, 224)
-    traj, cache = wm.run_with_cache(obs)
+    traj, latent_traj, cache = wm.run_with_cache(obs)
 
     assert len(traj.states) > 0
+    assert len(latent_traj.states) > 0
     assert traj.metadata["forward_runner"] is True
     assert traj.metadata["world_model_family"] == WorldModelFamily.JEPA.name
 

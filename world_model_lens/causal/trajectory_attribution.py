@@ -122,7 +122,7 @@ class TrajectoryAttribution:
         """
         # Get baseline trajectory
         observations = torch.randn(20, 3, 64, 64)
-        baseline_traj, baseline_cache = self.wm.run_with_cache(observations)
+        baseline_traj, _, baseline_cache = self.wm.run_with_cache(observations)
 
         # Get latent dimension
         z_sample = baseline_cache.get(("z_posterior", source_timestep))
@@ -232,7 +232,7 @@ class TrajectoryAttribution:
 
         # Get observations
         observations = torch.randn(trajectory_length, 3, 64, 64)
-        baseline_traj, baseline_cache = self.wm.run_with_cache(observations)
+        baseline_traj, _, baseline_cache = self.wm.run_with_cache(observations)
 
         # For each source timestep
         for source_t in range(trajectory_length):
@@ -271,7 +271,7 @@ class TrajectoryAttribution:
             Dict mapping timestep to effect magnitude
         """
         observations = torch.randn(20, 3, 64, 64)
-        baseline_traj, _ = self.wm.run_with_cache(observations)
+        baseline_traj, _, _ = self.wm.run_with_cache(observations)
 
         propagation = {}
 
@@ -312,7 +312,7 @@ class TrajectoryAttribution:
             Tensor of shape [len(timesteps), d_z, d_z]
         """
         observations = torch.randn(20, 3, 64, 64)
-        baseline_traj, _ = self.wm.run_with_cache(observations)
+        baseline_traj, _, _ = self.wm.run_with_cache(observations)
 
         z_sample = baseline_traj.states[0].state
         d_z = z_sample.shape[-1]
@@ -353,7 +353,7 @@ class TrajectoryAttribution:
             hook_specs={f"t={timestep}.z": pair_ablate},
         )
 
-        baseline_traj, _ = self.wm.run_with_cache(observations)
+        baseline_traj, _, _ = self.wm.run_with_cache(observations)
 
         baseline_outcome = self._extract_metric(baseline_traj, -1, metric)
         intervened_outcome = self._extract_metric(traj, -1, metric)

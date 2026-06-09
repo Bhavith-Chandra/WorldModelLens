@@ -222,7 +222,7 @@ class InterpretabilityHierarchy:
         """
         from world_model_lens.causal.trajectory_attribution import TrajectoryAttribution
 
-        traj, _ = self.wm.run_with_cache(observations)
+        traj, _, _ = self.wm.run_with_cache(observations)
 
         T = len(traj.states)
 
@@ -355,7 +355,7 @@ class InterpretabilityHierarchy:
         Returns:
             Dict with all three levels of analysis
         """
-        traj, _ = self.wm.run_with_cache(observations)
+        traj, _, _ = self.wm.run_with_cache(observations)
 
         # Level 2: Examine state
         state_unit = self.examine_state(focus_timestep, traj)

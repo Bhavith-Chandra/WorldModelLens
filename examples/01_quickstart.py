@@ -17,7 +17,6 @@ OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 from world_model_lens import HookedWorldModel, WorldModelConfig
 from world_model_lens.backends.dreamerv3 import DreamerV3Adapter
-from world_model_lens.envs import GymnasiumAdapter
 from world_model_lens.visualization import plot_quickstart_dashboard
 
 
@@ -42,22 +41,10 @@ def main():
     wm = HookedWorldModel(adapter=adapter, config=cfg, name="quickstart")
     print("\n[3] HookedWorldModel wrapper created")
 
-    env = GymnasiumAdapter("Pendulum-v1")
-    obs, _ = env.reset(seed=42)
-    obs_list, action_list = [], []
-    T = 10
-    for _ in range(T):
-        action = env.action_space.sample()
-        obs_list.append(torch.from_numpy(obs).float())
-        action_list.append(torch.from_numpy(action).float())
-        result = env.step(action)
-        obs = result.observation
-        if result.done:
-            break
-    env.close()
-    obs_seq = torch.stack(obs_list)
-    action_seq = torch.stack(action_list)
-    print(f"\n[4] Collected {len(obs_list)} steps from Pendulum-v1: obs={obs_seq.shape}, actions={action_seq.shape}")
+    T, C, H, W = 10, 3, 64, 64
+    obs_seq = torch.randn(T, C, H, W)
+    action_seq = torch.randn(T, cfg.d_action)
+    print(f"\n[4] Created fake data: obs={obs_seq.shape}, actions={action_seq.shape}")
 
     traj, cache = wm.run_with_cache(obs_seq, action_seq)
     print(f"\n[5] Forward pass complete!")

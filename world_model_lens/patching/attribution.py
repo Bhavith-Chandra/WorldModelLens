@@ -639,7 +639,7 @@ class AdvancedCausalTracer:
 
         corrupt_hook = self.wm.hook_builder.ablate_dims(corrupt_dims, corrupt_value)
 
-        clean_traj, clean_cache = self.wm.run_with_cache(observations)
+        clean_traj, _, clean_cache = self.wm.run_with_cache(observations)
 
         corrupted_traj = self.wm.run_with_advanced_hooks(
             observations,
@@ -681,7 +681,7 @@ class AdvancedCausalTracer:
 
         patch_fn = patch_fn or default_patch
 
-        clean_traj, _ = self.wm.run_with_cache(observations)
+        clean_traj, _, _ = self.wm.run_with_cache(observations)
 
         corrupted_traj = self.wm.run_with_advanced_hooks(
             observations,
@@ -720,7 +720,7 @@ class AdvancedCausalTracer:
 
         patch_fn = patch_fn or default_patch
 
-        clean_traj, _ = self.wm.run_with_cache(observations)
+        clean_traj, _, _ = self.wm.run_with_cache(observations)
 
         intervened_traj = self.wm.run_with_advanced_hooks(
             observations,

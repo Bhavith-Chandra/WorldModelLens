@@ -5,20 +5,26 @@ import torch
 import torch.nn as nn
 
 from world_model_lens import HookedWorldModel, WorldModelConfig
+from world_model_lens.core.activation_cache import ActivationCache
+from world_model_lens.core.world_trajectory import WorldTrajectory
 from world_model_lens.core.latent_trajectory import LatentTrajectory
 from world_model_lens.backends.base_adapter import BaseModelAdapter, WorldModelCapabilities
 
 
 def test_run_with_cache_returns_correct_length(hooked_wm, fake_obs_seq, fake_action_seq):
     """Test run_with_cache returns trajectory of correct length."""
-    traj, cache = hooked_wm.run_with_cache(fake_obs_seq, fake_action_seq)
-    assert traj.length == 10
+    world_traj, latent_traj, cache = hooked_wm.run_with_cache(fake_obs_seq, fake_action_seq)
+    assert isinstance(world_traj, WorldTrajectory)
+    assert isinstance(latent_traj, LatentTrajectory)
+    assert isinstance(cache, ActivationCache)
+    assert world_traj.length == 10
+    assert latent_traj.length == 10
     assert len(cache.timesteps) == 10
 
 
 def test_run_with_cache_caches_all_components(hooked_wm, fake_obs_seq, fake_action_seq):
     """Test cache contains all expected components."""
-    traj, cache = hooked_wm.run_with_cache(fake_obs_seq, fake_action_seq)
+    _, _, cache = hooked_wm.run_with_cache(fake_obs_seq, fake_action_seq)
     assert "state" in cache.component_names
     assert "z_posterior" in cache.component_names
     assert "z_prior" in cache.component_names
@@ -28,8 +34,9 @@ def test_imagine_returns_correct_horizon(hooked_wm, fake_trajectory):
     """Test imagine returns correct horizon length."""
     start_state = fake_trajectory.states[0]
     horizon = 20
-    imagined = hooked_wm.imagine(start_state=start_state, horizon=horizon)
-    assert imagined.length == horizon
+    imagined_world, imagined_latent = hooked_wm.imagine(start_state=start_state, horizon=horizon)
+    assert imagined_world.length == horizon
+    assert imagined_latent.length == horizon
 
 
 def test_named_weights_accessible(hooked_wm):
@@ -244,7 +251,7 @@ def test_run_with_cache_falls_back_to_predict_value_for_legacy_adapter():
 
     observations = torch.randn(3, cfg.d_obs)
     actions = torch.randn(3, cfg.d_action)
-    _, cache = wm.run_with_cache(observations, actions)
+    _, _, cache = wm.run_with_cache(observations, actions)
 
     assert len(adapter.value_calls) == 3
     assert "value" in cache.component_names
@@ -252,9 +259,9 @@ def test_run_with_cache_falls_back_to_predict_value_for_legacy_adapter():
 
 def test_run_with_cache_tracks_action_sources(hooked_wm, fake_obs_seq, fake_action_seq):
     """Test that run_with_cache properly tracks action sources."""
-    traj, _ = hooked_wm.run_with_cache(fake_obs_seq, fake_action_seq)
+    world_traj, _, _ = hooked_wm.run_with_cache(fake_obs_seq, fake_action_seq)
 
-    for state in traj.states:
+    for state in world_traj.states:
         if state.has_action():
             assert state.action_source is not None
             assert state.action_source.source_type == "externally_provided"
@@ -263,8 +270,8 @@ def test_run_with_cache_tracks_action_sources(hooked_wm, fake_obs_seq, fake_acti
 
 def test_non_jepa_run_with_cache_does_not_use_forward_runner_metadata(hooked_wm, fake_obs_seq, fake_action_seq):
     """Non-JEPA models should remain on the stable wrapper execution path."""
-    traj, _ = hooked_wm.run_with_cache(fake_obs_seq, fake_action_seq)
-    assert traj.metadata.get("forward_runner") is None
+    world_traj, _, _ = hooked_wm.run_with_cache(fake_obs_seq, fake_action_seq)
+    assert world_traj.metadata.get("forward_runner") is None
 
 def test_latent_traj_to_world_traj_raises_on_missing_h_t(hooked_wm):
     """Invalid runner output should fail loudly instead of fabricating zero states."""
@@ -333,16 +340,15 @@ def test_imagine_samples_actions_from_policy():
     start_ws = WorldState(state=start_state, timestep=0)
 
     # Imagine without providing actions - should sample from policy
-    imagined = wm.imagine(start_state=start_ws, horizon=5)
+    imagined_world, _ = wm.imagine(start_state=start_ws, horizon=5)
 
     # Check that actions were sampled
-    for i, state in enumerate(imagined.states):
-        if i > 0:  # Skip the first state which is the start state
-            assert state.has_action()
-            assert state.action_source is not None
-            assert state.action_source.source_type == "policy_sampled"
-            assert state.action_source.policy_logits is not None
-            assert state.action_source.temperature == 1.0
+    for state in imagined_world.states:
+        assert state.has_action()
+        assert state.action_source is not None
+        assert state.action_source.source_type == "policy_sampled"
+        assert state.action_source.policy_logits is not None
+        assert state.action_source.temperature == 1.0
 
 
 def test_imagine_uses_provided_actions():
@@ -393,10 +399,10 @@ def test_imagine_uses_provided_actions():
 
     # Provide actions explicitly
     actions = torch.randn(3, cfg.d_action)
-    imagined = wm.imagine(start_state=start_ws, actions=actions, horizon=3)
+    imagined_world, _ = wm.imagine(start_state=start_ws, actions=actions, horizon=3)
 
     # Check that provided actions were used
-    for i, state in enumerate(imagined.states):
+    for i, state in enumerate(imagined_world.states):
         assert state.has_action()
         assert state.action_source is not None
         assert state.action_source.source_type == "externally_provided"
@@ -466,7 +472,7 @@ def test_transition_hook_applies():
 
     observations = torch.randn(2, cfg.d_obs)
     actions = torch.randn(2, cfg.d_action)
-    traj, _ = wm.run_with_cache(observations, actions)
+    _, _, _ = wm.run_with_cache(observations, actions)
 
     # Should have called the hook for each timestep
     assert len(hook_calls) == 2

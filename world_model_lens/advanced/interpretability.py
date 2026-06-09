@@ -19,7 +19,7 @@ import torch.nn.functional as functional
 
 if TYPE_CHECKING:
     from world_model_lens import HookedWorldModel
-    from world_model_lens.core import ActivationCache, WorldTrajectory
+    from world_model_lens.core import ActivationCache, LatentTrajectory
     from world_model_lens.probing.prober import ProbeResult
     from world_model_lens.sae.sae import SparseAutoencoder as Sae
 
@@ -206,7 +206,7 @@ class PathPatcher:
 
         try:
             obs = torch.randn(10, self.wm.config.d_obs)
-            traj, _ = self.wm.run_with_cache(obs)
+            _, traj, _ = self.wm.run_with_cache(obs)
             patched_metric = metric_fn(traj)
         except Exception:
             patched_metric = 0.0
@@ -383,7 +383,7 @@ class LongHorizonAnalyzer:
 
     def detect_planning_horizon(
         self,
-        trajectory: WorldTrajectory,
+        trajectory: LatentTrajectory,
         horizon: int = 100,
     ) -> int:
         """Detect timesteps where future predictions lose fidelity.
@@ -401,7 +401,7 @@ class LongHorizonAnalyzer:
         if actions is None or actions.shape[0] < horizon:
             horizon = actions.shape[0] if actions is not None else 10
 
-        imagined = self.wm.imagine(start_state, actions[:horizon], horizon=horizon)
+        _, imagined = self.wm.imagine(start_state, actions[:horizon], horizon=horizon)
 
         real_rewards = trajectory.rewards_real
         pred_rewards = imagined.rewards_pred if imagined.rewards_pred is not None else None
@@ -421,8 +421,8 @@ class LongHorizonAnalyzer:
 
     def compute_belief_drift(
         self,
-        imagined_trajectory: WorldTrajectory,
-        real_trajectory: WorldTrajectory | None = None,
+        imagined_trajectory: LatentTrajectory,
+        real_trajectory: LatentTrajectory | None = None,
     ) -> torch.Tensor:
         """Compute KL divergence accumulating over imagination.
 
@@ -453,7 +453,7 @@ class LongHorizonAnalyzer:
 
     def detect_overcommitment(
         self,
-        trajectory: WorldTrajectory,
+        trajectory: LatentTrajectory,
         threshold: float = 0.1,
     ) -> list[int]:
         """Detect timesteps where value predictions don't update after surprise.
@@ -465,7 +465,9 @@ class LongHorizonAnalyzer:
         Returns:
             List of overcommitted timesteps.
         """
-        value_pred = trajectory.value_pred_sequence
+        value_pred = torch.stack(
+            [state.value_pred for state in trajectory.states if state.value_pred is not None], dim=0
+        ) if any(state.value_pred is not None for state in trajectory.states) else None
         surprise = trajectory.kl_sequence
 
         if value_pred is None or surprise is None:
@@ -482,14 +484,14 @@ class LongHorizonAnalyzer:
 
     def full_analysis(
         self,
-        trajectory: WorldTrajectory,
+        trajectory: LatentTrajectory,
         horizon: int = 50,
     ) -> dict[str, Any]:
         """Run complete long-horizon analysis."""
         start_state = trajectory.states[0]
         actions = trajectory.actions
 
-        imagined = self.wm.imagine(start_state, actions, horizon=horizon)
+        _, imagined = self.wm.imagine(start_state, actions, horizon=horizon)
 
         planning_horizon = self.detect_planning_horizon(trajectory, horizon)
         belief_drift = self.compute_belief_drift(imagined, trajectory)
