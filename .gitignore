@@ -145,3 +145,6 @@ outputs/
 *.pkl
 *.parquet
 *.pth.tar
+
+# Generated frame images
+examples/ijepa/layer_frames/
