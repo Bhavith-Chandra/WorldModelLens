@@ -4,13 +4,15 @@ import torch.nn.functional as F
 import copy
 import random
 import logging
-from typing import Optional, Tuple, List, Dict, Any, Union
+from typing import Optional, Tuple, List, Dict, Any, Union, cast
 
 from world_model_lens.backends.base_adapter import BaseModelAdapter, WorldModelCapabilities
 from world_model_lens.backends.registry import register
 from world_model_lens.core.types import WorldModelFamily
 from world_model_lens.core.config import WorldModelConfig
 from world_model_lens.core.hooked_root import HookedRootModule
+
+from world_model_lens.core.hooks import HookContext, HookRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -125,6 +127,7 @@ class VisionTransformer(nn.Module):
         self, img_size=224, patch_size=16, in_chans=3, embed_dim=192, depth=6, num_heads=3
     ):
         super().__init__()
+        self.prefix = ""
         self.patch_embed = PatchEmbed(img_size, patch_size, in_chans, embed_dim)
         num_patches = self.patch_embed.n_patches
 
@@ -148,6 +151,7 @@ class VisionTransformer(nn.Module):
 
         # 2. Select specific patches if specified
         if patch_ids is not None:
+            pos_embed = self.pos_embed
             # patch_ids can be a single list or a tensor [B, N_subset]
             if isinstance(patch_ids, (list, tuple, torch.Tensor)):
                 if isinstance(patch_ids, (list, tuple)):
@@ -173,15 +177,20 @@ class VisionTransformer(nn.Module):
 
         # 3. Add positional embeddings to only the visible patches
         x = x + pos_embed
-        return self.forward_blocks(x)
+        return self.forward_blocks(
+            x, hooks=getattr(self, "hooks", None), timestep=getattr(self, "current_timestep", 0)
+        )
 
-    def forward_blocks(self, x, mask=None):
+    def forward_blocks(self, x, mask=None, hooks=None, timestep=0):
         """Processes latent embeddings through the transformer blocks."""
         x = self.pos_drop(x)
         x = self.hook_resid_pre(x)
         for block in self.blocks:
             x = block(x, mask=mask)
         x = self.norm(x)
+        if hooks is not None:
+            ctx = HookContext(timestep=timestep, component="norm")
+            x = hooks.apply(f"{self.prefix}norm", timestep, x, ctx)
         return x
 
     def forward_blocks_hooked(self, x, mask=None):
@@ -196,13 +205,15 @@ class VisionTransformer(nn.Module):
         return x, outputs
 
 
-class IJEPAPredictor(nn.Module):
+class IJEPAPredictor(HookedRootModule):
+    # prefix: str
     """Predictor transformer that maps context embeddings to target embeddings."""
 
     def __init__(
         self, encoder_embed_dim=192, predictor_embed_dim=384, depth=4, num_heads=6, num_patches=196
     ):
         super().__init__()
+        self.prefix = ""
         self.encoder_embed_dim = encoder_embed_dim
         self.predictor_embed_dim = predictor_embed_dim
 
@@ -212,7 +223,7 @@ class IJEPAPredictor(nn.Module):
         self.mask_token = nn.Parameter(torch.zeros(1, 1, predictor_embed_dim))
         self.pos_embed = nn.Parameter(torch.zeros(1, num_patches, predictor_embed_dim))
 
-        self.blocks = nn.ModuleList(
+        self.blocks: nn.ModuleList = nn.ModuleList(
             [Block(dim=predictor_embed_dim, num_heads=num_heads) for _ in range(depth)]
         )
         self.norm = nn.LayerNorm(predictor_embed_dim)
@@ -258,7 +269,11 @@ class IJEPAPredictor(nn.Module):
         return target_preds
 
     def get_last_self_attention(self):
-        return self.blocks[-1].attn.last_attn_weights
+        block = cast(Block, self.blocks[-1])
+        return block.attn.last_attn_weights
+
+    def __call__(self, context_latents, context_ids, target_ids):
+        return self.forward(context_latents, context_ids, target_ids)
 
 
 # ---------------------------------------------------------------------------
@@ -317,6 +332,8 @@ class IJEPAAdapter(BaseModelAdapter, HookedRootModule):
         # Last known masks for inference/interpretability
         self.last_context_ids = None
         self.last_target_ids = None
+        self.hooks = HookRegistry()
+        self.current_timestep = 0
 
         self.setup_hooks()
 
@@ -373,6 +390,7 @@ class IJEPAAdapter(BaseModelAdapter, HookedRootModule):
         # 2. Sample context block (~85% area) with resampling fallback
         found_context = False
         attempts = 0
+        context_indices: set[int] = set()
         while not found_context and attempts < 10:
             # Context rectangle covers ~85% of grid independently
             context_raw = self._get_block(grid_size, 0.80, 0.90)
@@ -410,7 +428,7 @@ class IJEPAAdapter(BaseModelAdapter, HookedRootModule):
         context_latents = self.context_encoder(obs, patch_ids=context_ids)  # [B, N_context, C]
 
         # 4. Predict targets block-wise as per the original I-JEPA paper
-        total_loss = 0.0
+        total_loss = torch.tensor(0.0, device=obs.device)
         for block_ids in target_ids_list:
             target_gt_block = target_reps[:, block_ids, :]
             predicted_block = self.predictor(context_latents, context_ids, block_ids)
@@ -449,6 +467,10 @@ class IJEPAAdapter(BaseModelAdapter, HookedRootModule):
 
     def target_encode(self, obs: torch.Tensor) -> torch.Tensor:
         """Expose target encoder as a separate hook point for ground-truth comparison."""
+        # Sync hooks to submodules
+        self.target_encoder.hooks = self.hooks
+        self.target_encoder.current_timestep = self.current_timestep
+
         with torch.no_grad():
             return self.target_encoder(obs)
 
@@ -477,16 +499,18 @@ class IJEPAAdapter(BaseModelAdapter, HookedRootModule):
         if self.last_target_ids is None:
             self.last_target_ids = list(range(10))
 
+        self.predictor.hooks = self.hooks
+        self.predictor.current_timestep = self.current_timestep
         pred_latents = self.predictor(h, self.last_context_ids, self.last_target_ids)
         return pred_latents
 
     def transition(
-        self, h: torch.Tensor, z: torch.Tensor, action: torch.Tensor = None
+        self, h: torch.Tensor, z: torch.Tensor, action: Optional[torch.Tensor] = None
     ) -> torch.Tensor:
         return h
 
     def initial_state(
-        self, batch_size: int = 1, device: torch.device = None
+        self, batch_size: int = 1, device: Optional[torch.device] = None
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         grid_size = self.context_encoder.patch_embed.grid_size
         num_patches = self.context_encoder.patch_embed.n_patches

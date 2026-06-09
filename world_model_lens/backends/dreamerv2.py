@@ -261,3 +261,9 @@ class DreamerV2Adapter(BaseModelAdapter):
     def train(self, mode: bool = True) -> "DreamerV2Adapter":
         super().train(mode)
         return self
+
+    def list_hookable_points(self) -> List[str]:
+        """Return semantic hook names plus concrete module paths."""
+        points = list(self.hook_point_names)
+        points.extend(name for name, _ in self.named_modules() if name)
+        return list(dict.fromkeys(points))

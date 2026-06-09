@@ -75,9 +75,9 @@ class VideoWorldModelAdapter(BaseModelAdapter):
         for dim in frame_shape:
             self.frame_size *= dim
 
-        self.encoder = VideoEncoder(self.frame_size, config.d_state)
-        self.dynamics_model = VideoDynamics(config.d_state)
-        self.decoder = VideoDecoder(config.d_state, self.frame_size)
+        self.encoder = VideoEncoder(self.frame_size, config.d_embed)
+        self.dynamics_model = VideoDynamics(config.d_embed)
+        self.decoder = VideoDecoder(config.d_embed, self.frame_size)
         self._capabilities = WorldModelCapabilities(
             has_decoder=True,
             has_reward_head=False,
@@ -182,8 +182,8 @@ class VideoWorldModelAdapter(BaseModelAdapter):
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         if device is None:
             device = self._device
-        h = torch.zeros(batch_size, self.config.d_state, device=device)
-        z = torch.zeros(batch_size, self.config.d_state, device=device)
+        h = torch.zeros(batch_size, self.config.d_embed, device=device)
+        z = torch.zeros(batch_size, self.config.d_embed, device=device)
         return h, z
 
     def to(self, device: torch.device) -> "VideoWorldModelAdapter":

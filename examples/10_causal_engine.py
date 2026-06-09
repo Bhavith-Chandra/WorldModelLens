@@ -29,7 +29,8 @@ def main():
     print("World Model Lens — CounterfactualEngine walkthrough")
     print("=" * 60)
 
-    cfg = WorldModelConfig(d_h=128, n_cat=16, n_cls=16, d_action=4, d_obs=12288)
+    # Pendulum-v1 has a 3-dim obs and 1-dim continuous action matching these config values.
+    cfg = WorldModelConfig(d_h=128, n_cat=16, n_cls=16, d_action=1, d_obs=3, encoder_type="mlp")
     adapter = DreamerV3Adapter(cfg)
     wm = HookedWorldModel(adapter=adapter, config=cfg)
 

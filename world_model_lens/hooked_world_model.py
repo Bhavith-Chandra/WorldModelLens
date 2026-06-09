@@ -372,6 +372,9 @@ class HookedWorldModel:
         if state.dim() > 1 and state.shape[0] == 1:
             state = state.squeeze(0)
 
+        last_target_obs = None
+        last_target_encoding = None
+
         for t in range(T):
             obs = observations[t]
             action = None
@@ -381,6 +384,12 @@ class HookedWorldModel:
             hook_ctx = HookContext(timestep=t, component="state", trajectory_so_far=latent_states)
             # apply hooks and cache via central helper
             state = self._apply_and_cache("state", t, state, hook_ctx, cache, names_filter)
+
+            # Sync hooks to adapter for internal component hooking
+            if hasattr(self.adapter, "hooks"):
+                self.adapter.hooks = self._hooks
+            if hasattr(self.adapter, "current_timestep"):
+                self.adapter.current_timestep = t
 
             posterior, obs_encoding = self.adapter.encode(
                 obs.unsqueeze(0), state.unsqueeze(0) if state.dim() == 1 else state
@@ -441,9 +450,19 @@ class HookedWorldModel:
 
             # Check for optional target encoder (e.g. for I-JEPA/JEPA models)
             if hasattr(self.adapter, "target_encode"):
-                target_encoding = self.adapter.target_encode(obs.unsqueeze(0))
+                use_cached_target = (
+                    last_target_obs is not None
+                    and obs.shape == last_target_obs.shape
+                    and torch.equal(obs, last_target_obs)
+                )
+                if use_cached_target:
+                    target_encoding = last_target_encoding
+                else:
+                    target_encoding = self.adapter.target_encode(obs.unsqueeze(0))
                 if target_encoding is not None:
                     target_encoding = target_encoding.squeeze(0)
+                    last_target_obs = obs.detach().clone()
+                    last_target_encoding = target_encoding
                     self._apply_and_cache(
                         "target_encoding",
                         t,
@@ -842,6 +861,66 @@ class HookedWorldModel:
     def hook_registry(self) -> HookRegistry:
         """Access the hook registry."""
         return self._hooks
+
+    def list_hookable_points(self) -> List[str]:
+        """List hook targets exposed by the wrapper and its adapter.
+
+        The wrapper always exposes its timestep-level hook points. If the
+        adapter also advertises hook points, they are merged in so callers can
+        discover both the public wrapper API and adapter-specific sites.
+        """
+        points = [
+            "state",
+            "h",
+            "z_posterior",
+            "z_prior",
+            "observation",
+            "target_encoding",
+            "kl",
+            "reconstruction",
+            "reward",
+            "value",
+            "action",
+            "transition",
+            "kv_cache",
+        ]
+
+        adapter = getattr(self, "adapter", None)
+        if adapter is None:
+            return points
+
+        adapter_points: List[str] = []
+
+        list_hookable_points = getattr(adapter, "list_hookable_points", None)
+        if callable(list_hookable_points):
+            try:
+                adapter_points.extend(list(list_hookable_points()))
+            except Exception:
+                pass
+
+        hook_point_names = getattr(adapter, "hook_point_names", None)
+        if hook_point_names is not None:
+            try:
+                adapter_points.extend(list(hook_point_names))
+            except TypeError:
+                pass
+
+        if self._get_world_model_family() == WorldModelFamily.JEPA:
+            predictor = getattr(adapter, "predictor", None)
+            blocks = getattr(predictor, "blocks", None)
+            if blocks is not None:
+                adapter_points.extend([f"predictor.layer_{i}" for i in range(len(blocks))])
+            adapter_points.extend(
+                [
+                    "encoder.out",
+                    "target_encoder.out",
+                    "predictor.final",
+                    "predictor_out",
+                    "target_encoder_out",
+                ]
+            )
+
+        return list(dict.fromkeys(points + adapter_points))
 
     @property
     def capabilities(self) -> WorldModelCapabilities:

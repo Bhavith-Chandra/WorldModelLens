@@ -29,7 +29,9 @@ def main():
     print("World Model Lens - Linear Probing Example")
     print("=" * 60)
 
-    cfg = WorldModelConfig(d_h=128, n_cat=16, n_cls=16, d_action=4, d_obs=12288)
+    # Pendulum-v1 obs is (cos θ, sin θ, θ̇) so d_obs=3 and d_action=1 — the DreamerV3Adapter
+    # will automatically use its MLP vector encoder instead of the CNN branch.
+    cfg = WorldModelConfig(d_h=128, n_cat=16, n_cls=16, d_action=1, d_obs=3, encoder_type="mlp")
     adapter = DreamerV3Adapter(cfg)
     wm = HookedWorldModel(adapter=adapter, config=cfg)
 
