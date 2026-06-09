@@ -32,6 +32,7 @@ def main():
         n_cls=32,
         d_action=1,
         d_obs=3,
+        encoder_type="mlp"
     )
     print(f"\n[1] Config created: d_h={cfg.d_h}, n_cat={cfg.n_cat}, n_cls={cfg.n_cls}")
 

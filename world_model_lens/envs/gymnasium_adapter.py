@@ -16,6 +16,7 @@ except ImportError:
     HAS_GYM = False
     gym = None
     spaces = None
+    print("[!WARNING] Gymnasium not installed. No Fallback in place, may cause errors in future. Please install it with: pip install gymnasium")
 
 from world_model_lens.envs.base import (
     EnvironmentAdapter,
