@@ -1,49 +1,71 @@
 import torch
 import numpy as np
-from typing import Dict, List, Any, Tuple
+from typing import Dict, List, Any, Tuple, Optional
 from PIL import Image
 
-def get_patch_pixels(img_tensor: torch.Tensor, patch_idx: int, patch_size: int = 16) -> torch.Tensor:
-    """Extracts a 16x16 patch from the preprocessed image tensor.
+def get_patch_pixels(img_tensor: torch.Tensor, patch_idx: int, patch_size: Optional[int] = None) -> torch.Tensor:
+    """Extracts a patch from the preprocessed image tensor.
     
     Args:
         img_tensor: [1, 3, H, W] or [3, H, W]
+        patch_idx: Patch token index
+        patch_size: Optional size of patch in pixels (if None, inferred dynamically)
     """
     if img_tensor.dim() == 4:
         img_tensor = img_tensor.squeeze(0) # [3, H, W]
         
-    grid_size = img_tensor.shape[1] // patch_size
-    r = patch_idx // grid_size
-    c = patch_idx % grid_size
+    H, W = img_tensor.shape[1], img_tensor.shape[2]
     
-    patch = img_tensor[:, r*patch_size : (r+1)*patch_size, c*patch_size : (c+1)*patch_size]
+    if patch_size is None:
+        # Dynamically infer patch_size (e.g. 14 for ViT-H/14 with 256 patches on 224x224, else 16)
+        if H == 224 and W == 224 and patch_idx >= 196:
+            patch_size = 14
+        else:
+            patch_size = 16
+            
+    grid_size_h = max(1, H // patch_size)
+    grid_size_w = max(1, W // patch_size)
+    
+    r = min(patch_idx // grid_size_w, grid_size_h - 1)
+    c = min(patch_idx % grid_size_w, grid_size_w - 1)
+    
+    r_start = r * patch_size
+    r_end = min((r + 1) * patch_size, H)
+    c_start = c * patch_size
+    c_end = min((c + 1) * patch_size, W)
+    
+    patch = img_tensor[:, r_start:r_end, c_start:c_end]
     return patch
 
-def compute_patch_properties(img_tensor: torch.Tensor, patch_idx: int) -> Dict[str, float]:
+def compute_patch_properties(img_tensor: torch.Tensor, patch_idx: int, patch_size: Optional[int] = None) -> Dict[str, float]:
     """Computes physical properties directly from patch pixels."""
     if img_tensor.dim() == 4:
         img_tensor = img_tensor.squeeze(0)
-    patch = get_patch_pixels(img_tensor, patch_idx)
+    patch = get_patch_pixels(img_tensor, patch_idx, patch_size)
     
     # 1. Brightness: Mean pixel value across channels
-    brightness = float(patch.mean().item())
+    brightness = float(patch.mean().item()) if patch.numel() > 0 else 0.0
     
     # 2. Contrast: Std dev of pixel values
-    contrast = float(patch.std().item())
+    contrast = float(patch.std().item()) if patch.numel() > 1 else 0.0
     
     # 3. Complexity: Laplacian variance proxy (high-freq spatial derivative)
-    # Simple laplacian kernel
     lap_kernel = torch.tensor([[0, 1, 0], [1, -4, 1], [0, 1, 0]], dtype=torch.float32, device=patch.device).reshape(1, 1, 3, 3)
-    # Apply to each channel
     lap_vars = []
-    for ch in range(3):
-        ch_pixels = patch[ch].unsqueeze(0).unsqueeze(0) # [1, 1, 16, 16]
-        lap = torch.nn.functional.conv2d(ch_pixels, lap_kernel, padding=1)
-        lap_vars.append(lap.var().item())
-    complexity = float(np.mean(lap_vars))
+    if patch.shape[1] >= 3 and patch.shape[2] >= 3:
+        for ch in range(patch.shape[0]):
+            ch_pixels = patch[ch].unsqueeze(0).unsqueeze(0) # [1, 1, H, W]
+            lap = torch.nn.functional.conv2d(ch_pixels, lap_kernel, padding=1)
+            lap_vars.append(lap.var().item())
+        complexity = float(np.mean(lap_vars))
+    else:
+        complexity = 0.0
     
     # 4. Position: coordinates
-    grid_size = img_tensor.shape[1] // 16
+    H = img_tensor.shape[1]
+    if patch_size is None:
+        patch_size = 14 if (H == 224 and patch_idx >= 196) else 16
+    grid_size = max(1, H // patch_size)
     grid_y = patch_idx // grid_size
     grid_x = patch_idx % grid_size
     
