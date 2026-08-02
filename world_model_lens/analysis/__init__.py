@@ -15,6 +15,8 @@ from world_model_lens.analysis.attribution import (
     extract_attention_weights,
 )
 
+from world_model_lens.analysis.pvl import PhysicalVariableAnalyzer
+
 __all__ = [
     "BeliefAnalyzer",
     "FaithfulnessAnalyzer",
@@ -26,4 +28,5 @@ __all__ = [
     "SmoothGradAttribution",
     "AttributionEvaluator",
     "extract_attention_weights",
+    "PhysicalVariableAnalyzer",
 ]

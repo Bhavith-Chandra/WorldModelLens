@@ -617,7 +617,7 @@ class ModelHub:
                 stacklevel=2,
             )
 
-        adapter = adapter.to(torch.device(device))
+        adapter = adapter.to(device=device)
         adapter.eval()
         return adapter
 
