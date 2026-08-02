@@ -306,3 +306,37 @@ Each adapter exposes a `WorldModelCapabilities` descriptor (uses_actions, has_re
 3. **Observability-first**: Every activation is observable, every decision traceable
 4. **TransformerLens-inspired**: Hook system, activation caching, and analysis patterns
 5. **Safety-centric**: Built-in OOD detection, hallucination analysis, robustness testing
+
+---
+
+## Physical Variable Localization (PVL) & Probing Enhancements
+
+### Features Added
+1. **Physical Observables & MLP Probes**:
+   - Enhanced `experiments/pvl/observables.py` with `MLPProbe` (2-layer non-linear neural network probe with PyTorch Adam optimization) alongside `LinearProbe`.
+   - Expanded physical observables to include 7 physical variables: `brightness`, `contrast`, `complexity`, `grid_y`, `grid_x`, `radial_distance`, and `aspect_ratio_proxy`.
+2. **Core Analysis Module**:
+   - Created `world_model_lens/analysis/pvl.py` providing `PhysicalVariableAnalyzer` for subspace discovery (PCA/ICA/NMF), probe training, causal steering, depth emergence, and cross-attention consumption.
+   - Exported in `world_model_lens/analysis/__init__.py`.
+3. **ViT-H/14 Support & Dynamic Layer Configuration**:
+   - Updated `experiments/pvl/latent_collection.py` and `run_experiment.py` to auto-detect and load large-scale checkpoints like `vith14_in1k_ep300.pth.tar` ($d_{\text{embed}}=1280$, $N_{\text{layers}}=32$, $N_{\text{pred\_depth}}=12$).
+   - Dynamic layer sampling and probe configuration via CLI.
+4. **Unit Tests**:
+   - `tests/test_pvl.py` verified with `pytest` (5/5 tests passing).
+
+### Execution Commands
+
+```bash
+# 1. Run PVL Unit Tests
+python -m pytest tests/test_pvl.py -v
+
+# 2. Verify ViT-H/14 Checkpoint Loading & Dynamic Layer Config
+python experiments/pvl/run_experiment.py --verify_only --weights_path vith14_in1k_ep300.pth.tar
+
+# 3. Run Scale Validation Experiment on 15 Images with ViT-H/14 Checkpoint
+python experiments/pvl/run_experiment.py --n_images 15 --weights_path vith14_in1k_ep300.pth.tar --probe_type mlp
+
+# 4. Run Lightweight Experiment with ViT-Mini Checkpoint
+python experiments/pvl/run_experiment.py --n_images 15 --weights_path ijepa_mini.pth --probe_type linear
+```
+
