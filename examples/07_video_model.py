@@ -11,9 +11,10 @@ A video prediction model:
 """
 
 import torch
+import torch.nn.functional as F
 import numpy as np
 
-from world_model_lens import HookedWorldModel
+from world_model_lens import HookedWorldModel, GymnasiumAdapter
 from world_model_lens.core.config import WorldModelConfig
 # from world_model_lens.backends.generic_adapter import WorldModelConfig
 from world_model_lens.backends.video_adapter import VideoWorldModelAdapter
