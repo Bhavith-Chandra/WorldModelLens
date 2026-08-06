@@ -1,0 +1,42 @@
+{
+    "metadata": {
+        "weights": "vith14_in1k_ep300.pth.tar",
+        "n_samples": 448,
+        "n_steps": 50,
+        "predictor_depth": 4
+    },
+    "layer_results": {
+        "0": {
+            "mean_overlap": 0.16592261904761907,
+            "mean_spearman": 0.18868223652387828,
+            "failure_rate": 0.7388392857142857,
+            "negative_spearman_rate": 0.40401785714285715,
+            "mean_overlap_across_heads": 0.1385168650793651,
+            "mean_corr_across_heads": -0.06894747915942515
+        },
+        "1": {
+            "mean_overlap": 0.38318452380952384,
+            "mean_spearman": 0.45296224846777877,
+            "failure_rate": 0.26339285714285715,
+            "negative_spearman_rate": 0.13169642857142858,
+            "mean_overlap_across_heads": 0.1666046626984127,
+            "mean_corr_across_heads": 0.13513745367517002
+        },
+        "2": {
+            "mean_overlap": 0.22433035714285715,
+            "mean_spearman": 0.6744603577025473,
+            "failure_rate": 0.5982142857142857,
+            "negative_spearman_rate": 0.017857142857142856,
+            "mean_overlap_across_heads": 0.12996031746031744,
+            "mean_corr_across_heads": 0.196634163452286
+        },
+        "3": {
+            "mean_overlap": 0.09077380952380952,
+            "mean_spearman": 0.540967572449263,
+            "failure_rate": 0.8482142857142857,
+            "negative_spearman_rate": 0.07142857142857142,
+            "mean_overlap_across_heads": 0.1201016865079365,
+            "mean_corr_across_heads": 0.06301777654068463
+        }
+    }
+}

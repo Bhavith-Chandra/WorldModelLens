@@ -1,0 +1,6 @@
+# Documentation build requirements for Read the Docs
+# Heavy runtime deps (torch, gymnasium, etc.) are mocked in conf.py
+sphinx>=7.0
+sphinx-autodoc-typehints>=1.20.0
+myst-parser>=2.0.0
+pydata-sphinx-theme>=0.15.0

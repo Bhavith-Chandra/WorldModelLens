@@ -1,0 +1,2881 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Elemental Research Lab — Interpretability and Safety for World Models</title>
+<meta name="description" content="Elemental Research Lab builds tools, methods, and benchmarks to analyze, debug, and stress-test world models used in reinforcement learning, autonomous systems, and AI safety.">
+<link rel="icon" type="image/svg+xml" href="logo.svg">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+/* ============================================================
+   DESIGN SYSTEM
+   ============================================================ */
+:root {
+  /* Colors */
+  --c-bg: #FAFBFC;
+  --c-surface: #FFFFFF;
+  --c-surface-alt: #F3F5F7;
+  --c-border: #E2E6EA;
+  --c-border-light: #EEF0F3;
+  --c-text: #1A1D21;
+  --c-text-secondary: #5A6270;
+  --c-text-tertiary: #8A919C;
+  --c-accent: #0F00BF;
+  --c-accent-light: #EDEAFF;
+  --c-accent-hover: #0B0099;
+  --c-accent-subtle: #D5CFFF;
+  --c-danger: #C53D3D;
+  --c-warning: #D49A1A;
+  --c-success: #1A8754;
+  --c-chart-1: #0F00BF;
+  --c-chart-2: #3B82C4;
+  --c-chart-3: #8B5CF6;
+  --c-chart-4: #E67E22;
+  --c-chart-5: #64748B;
+
+  /* Typography */
+  --f-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --f-mono: 'JetBrains Mono', 'SF Mono', 'Fira Code', monospace;
+  --fs-xs: 0.75rem;
+  --fs-sm: 0.875rem;
+  --fs-base: 1rem;
+  --fs-lg: 1.125rem;
+  --fs-xl: 1.5rem;
+  --fs-2xl: 2rem;
+  --fs-3xl: 2.75rem;
+  --fs-4xl: 3.5rem;
+  --lh-tight: 1.2;
+  --lh-base: 1.6;
+
+  /* Spacing */
+  --s-1: 0.25rem;
+  --s-2: 0.5rem;
+  --s-3: 0.75rem;
+  --s-4: 1rem;
+  --s-5: 1.25rem;
+  --s-6: 1.5rem;
+  --s-8: 2rem;
+  --s-10: 2.5rem;
+  --s-12: 3rem;
+  --s-16: 4rem;
+  --s-20: 5rem;
+  --s-24: 6rem;
+  --s-32: 8rem;
+
+  /* Transitions */
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --duration-fast: 150ms;
+  --duration-base: 300ms;
+  --duration-slow: 500ms;
+
+  /* Layout */
+  --max-w: 1200px;
+  --nav-h: 64px;
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 16px;
+}
+
+/* ============================================================
+   RESET & BASE
+   ============================================================ */
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html {
+  scroll-behavior: smooth;
+  scroll-padding-top: calc(var(--nav-h) + 24px);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+body {
+  font-family: var(--f-sans);
+  font-size: var(--fs-base);
+  line-height: var(--lh-base);
+  color: var(--c-text);
+  background: var(--c-bg);
+  overflow-x: hidden;
+}
+
+a {
+  color: var(--c-accent);
+  text-decoration: none;
+  transition: color var(--duration-fast) ease;
+}
+a:hover { color: var(--c-accent-hover); }
+a:focus-visible {
+  outline: 2px solid var(--c-accent);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
+img { max-width: 100%; display: block; }
+
+button {
+  font-family: inherit;
+  cursor: pointer;
+  border: none;
+  background: none;
+}
+button:focus-visible {
+  outline: 2px solid var(--c-accent);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
+/* ============================================================
+   UTILITIES
+   ============================================================ */
+.container {
+  max-width: var(--max-w);
+  margin: 0 auto;
+  padding: 0 var(--s-6);
+}
+
+.section {
+  padding: var(--s-24) 0;
+}
+
+.section-label {
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--c-accent);
+  margin-bottom: var(--s-3);
+}
+
+.section-title {
+  font-size: var(--fs-2xl);
+  font-weight: 700;
+  line-height: var(--lh-tight);
+  color: var(--c-text);
+  margin-bottom: var(--s-4);
+}
+
+.section-subtitle {
+  font-size: var(--fs-lg);
+  color: var(--c-text-secondary);
+  max-width: 640px;
+  line-height: var(--lh-base);
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-2);
+  padding: var(--s-3) var(--s-6);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  border-radius: var(--radius-sm);
+  transition: all var(--duration-fast) ease;
+  white-space: nowrap;
+}
+
+.btn-primary {
+  background: var(--c-accent);
+  color: #fff;
+}
+.btn-primary:hover {
+  background: var(--c-accent-hover);
+  color: #fff;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(15,0,191,0.25);
+}
+
+.btn-secondary {
+  background: transparent;
+  color: var(--c-accent);
+  border: 1.5px solid var(--c-accent);
+}
+.btn-secondary:hover {
+  background: var(--c-accent-light);
+  transform: translateY(-1px);
+}
+
+.btn-ghost {
+  color: var(--c-text-secondary);
+  padding: var(--s-2) var(--s-3);
+}
+.btn-ghost:hover { color: var(--c-accent); }
+
+.tag {
+  display: inline-block;
+  padding: var(--s-1) var(--s-3);
+  font-size: var(--fs-xs);
+  font-weight: 500;
+  background: var(--c-surface-alt);
+  color: var(--c-text-secondary);
+  border-radius: 100px;
+  border: 1px solid var(--c-border-light);
+}
+.tag--accent {
+  background: var(--c-accent-light);
+  color: var(--c-accent);
+  border-color: var(--c-accent-subtle);
+}
+
+.divider {
+  height: 1px;
+  background: var(--c-border);
+  border: none;
+  margin: var(--s-16) 0;
+}
+
+/* Reveal animations */
+.reveal {
+  opacity: 0;
+  transform: translateY(24px);
+  transition: opacity var(--duration-slow) var(--ease-out),
+              transform var(--duration-slow) var(--ease-out);
+}
+.reveal.is-visible {
+  opacity: 1;
+  transform: translateY(0);
+}
+.reveal-delay-1 { transition-delay: 100ms; }
+.reveal-delay-2 { transition-delay: 200ms; }
+.reveal-delay-3 { transition-delay: 300ms; }
+.reveal-delay-4 { transition-delay: 400ms; }
+
+@media (prefers-reduced-motion: reduce) {
+  .reveal {
+    opacity: 1;
+    transform: none;
+    transition: none;
+  }
+}
+
+/* ============================================================
+   NAVIGATION
+   ============================================================ */
+.nav {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: var(--nav-h);
+  background: rgba(250,251,252,0.85);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  z-index: 100;
+  border-bottom: 1px solid transparent;
+  transition: border-color var(--duration-base) ease, box-shadow var(--duration-base) ease;
+}
+.nav.is-scrolled {
+  border-bottom-color: var(--c-border);
+  box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+}
+
+.nav__inner {
+  max-width: var(--max-w);
+  margin: 0 auto;
+  padding: 0 var(--s-6);
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.nav__logo {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  font-weight: 700;
+  font-size: var(--fs-base);
+  color: var(--c-text);
+  text-decoration: none;
+  flex-shrink: 0;
+}
+.nav__logo:hover { color: var(--c-text); }
+
+.nav__logo-icon {
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.nav__links {
+  display: flex;
+  align-items: center;
+  gap: var(--s-1);
+  list-style: none;
+}
+
+.nav__link {
+  font-size: var(--fs-sm);
+  font-weight: 500;
+  color: var(--c-text-secondary);
+  padding: var(--s-2) var(--s-3);
+  border-radius: var(--radius-sm);
+  transition: color var(--duration-fast) ease, background var(--duration-fast) ease;
+  text-decoration: none;
+}
+.nav__link:hover {
+  color: var(--c-text);
+  background: var(--c-surface-alt);
+}
+.nav__link.is-active {
+  color: var(--c-accent);
+  background: var(--c-accent-light);
+}
+
+.nav__github {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-2);
+  font-size: var(--fs-sm);
+  font-weight: 500;
+  color: var(--c-text-secondary);
+  padding: var(--s-2) var(--s-4);
+  border: 1px solid var(--c-border);
+  border-radius: var(--radius-sm);
+  transition: all var(--duration-fast) ease;
+  text-decoration: none;
+}
+.nav__github:hover {
+  color: var(--c-text);
+  border-color: var(--c-text-tertiary);
+  background: var(--c-surface-alt);
+}
+
+/* Mobile nav */
+.nav__toggle {
+  display: none;
+  width: 40px;
+  height: 40px;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-sm);
+}
+.nav__toggle:hover { background: var(--c-surface-alt); }
+
+.nav__toggle-icon {
+  width: 20px;
+  height: 14px;
+  position: relative;
+}
+.nav__toggle-icon span {
+  display: block;
+  width: 100%;
+  height: 2px;
+  background: var(--c-text);
+  border-radius: 1px;
+  position: absolute;
+  left: 0;
+  transition: all var(--duration-fast) ease;
+}
+.nav__toggle-icon span:nth-child(1) { top: 0; }
+.nav__toggle-icon span:nth-child(2) { top: 6px; }
+.nav__toggle-icon span:nth-child(3) { top: 12px; }
+
+.nav__toggle.is-open .nav__toggle-icon span:nth-child(1) {
+  top: 6px; transform: rotate(45deg);
+}
+.nav__toggle.is-open .nav__toggle-icon span:nth-child(2) {
+  opacity: 0;
+}
+.nav__toggle.is-open .nav__toggle-icon span:nth-child(3) {
+  top: 6px; transform: rotate(-45deg);
+}
+
+.nav__mobile {
+  display: none;
+  position: fixed;
+  top: var(--nav-h);
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: var(--c-bg);
+  padding: var(--s-6);
+  z-index: 99;
+  overflow-y: auto;
+}
+.nav__mobile.is-open { display: block; }
+
+.nav__mobile-links {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-1);
+}
+
+.nav__mobile-link {
+  display: block;
+  font-size: var(--fs-lg);
+  font-weight: 500;
+  color: var(--c-text-secondary);
+  padding: var(--s-3) var(--s-4);
+  border-radius: var(--radius-sm);
+  text-decoration: none;
+}
+.nav__mobile-link:hover {
+  color: var(--c-text);
+  background: var(--c-surface-alt);
+}
+
+@media (max-width: 1024px) {
+  .nav__links, .nav__github { display: none; }
+  .nav__toggle { display: flex; }
+}
+
+/* ============================================================
+   1. HERO
+   ============================================================ */
+.hero {
+  min-height: calc(100vh - var(--nav-h));
+  display: flex;
+  align-items: center;
+  padding-top: calc(var(--nav-h) + var(--s-12));
+  padding-bottom: var(--s-16);
+  position: relative;
+  overflow: hidden;
+}
+
+.hero__grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--s-16);
+  align-items: center;
+}
+
+.hero__content {
+  max-width: 560px;
+}
+
+.hero__badge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-2);
+  padding: var(--s-1) var(--s-4) var(--s-1) var(--s-2);
+  background: var(--c-accent-light);
+  color: var(--c-accent);
+  border-radius: 100px;
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  margin-bottom: var(--s-6);
+  border: 1px solid var(--c-accent-subtle);
+}
+.hero__badge-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--c-accent);
+  animation: pulse-dot 2s ease infinite;
+}
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+.hero__title {
+  font-size: clamp(var(--fs-2xl), 5vw, var(--fs-4xl));
+  font-weight: 700;
+  line-height: 1.1;
+  color: var(--c-text);
+  margin-bottom: var(--s-6);
+  letter-spacing: -0.02em;
+}
+.hero__title em {
+  font-style: normal;
+  color: var(--c-accent);
+}
+
+.hero__desc {
+  font-size: var(--fs-lg);
+  color: var(--c-text-secondary);
+  line-height: var(--lh-base);
+  margin-bottom: var(--s-4);
+}
+
+.hero__wml {
+  font-size: var(--fs-sm);
+  color: var(--c-text-tertiary);
+  margin-bottom: var(--s-8);
+  padding-left: var(--s-4);
+  border-left: 2px solid var(--c-accent-subtle);
+}
+
+.hero__actions {
+  display: flex;
+  gap: var(--s-3);
+  flex-wrap: wrap;
+}
+
+/* Hero visual: abstract schematic */
+.hero__visual {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 1;
+  max-width: 520px;
+  justify-self: end;
+}
+
+.hero__canvas {
+  width: 100%;
+  height: 100%;
+}
+
+@media (max-width: 768px) {
+  .hero__grid {
+    grid-template-columns: 1fr;
+    gap: var(--s-10);
+  }
+  .hero__visual {
+    max-width: 360px;
+    justify-self: center;
+  }
+  .hero { min-height: auto; padding-bottom: var(--s-12); }
+}
+
+/* ============================================================
+   2. LAB OVERVIEW
+   ============================================================ */
+.lab-overview__top {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--s-16);
+  margin-bottom: var(--s-16);
+}
+
+.lab-overview__mission p {
+  color: var(--c-text-secondary);
+  margin-bottom: var(--s-4);
+  max-width: 520px;
+}
+
+.lab-overview__focus {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-4);
+}
+
+.lab-overview__focus-item {
+  display: flex;
+  gap: var(--s-4);
+  align-items: flex-start;
+}
+
+.lab-overview__focus-icon {
+  width: 40px;
+  height: 40px;
+  border-radius: var(--radius-sm);
+  background: var(--c-accent-light);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  color: var(--c-accent);
+}
+
+.lab-overview__focus-title {
+  font-weight: 600;
+  font-size: var(--fs-sm);
+  margin-bottom: var(--s-1);
+}
+
+.lab-overview__focus-desc {
+  font-size: var(--fs-sm);
+  color: var(--c-text-secondary);
+}
+
+/* Lab Metrics */
+.lab-metrics {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: var(--s-6);
+}
+
+.lab-metric {
+  background: var(--c-surface);
+  border: 1px solid var(--c-border-light);
+  border-radius: var(--radius-md);
+  padding: var(--s-8) var(--s-6);
+  text-align: center;
+  transition: border-color var(--duration-fast) ease, box-shadow var(--duration-fast) ease;
+}
+.lab-metric:hover {
+  border-color: var(--c-accent-subtle);
+  box-shadow: 0 2px 12px rgba(15,0,191,0.06);
+}
+
+.lab-metric__value {
+  font-size: var(--fs-3xl);
+  font-weight: 700;
+  color: var(--c-accent);
+  line-height: 1;
+  margin-bottom: var(--s-2);
+  font-variant-numeric: tabular-nums;
+}
+
+.lab-metric__label {
+  font-size: var(--fs-sm);
+  color: var(--c-text-secondary);
+  font-weight: 500;
+}
+
+@media (max-width: 768px) {
+  .lab-overview__top { grid-template-columns: 1fr; gap: var(--s-10); }
+  .lab-metrics { grid-template-columns: repeat(2, 1fr); }
+}
+
+/* ============================================================
+   3. PROJECTS
+   ============================================================ */
+.projects__filters {
+  display: flex;
+  gap: var(--s-2);
+  margin-bottom: var(--s-8);
+  flex-wrap: wrap;
+}
+
+.filter-btn {
+  padding: var(--s-2) var(--s-4);
+  font-size: var(--fs-sm);
+  font-weight: 500;
+  color: var(--c-text-secondary);
+  background: var(--c-surface);
+  border: 1px solid var(--c-border);
+  border-radius: 100px;
+  transition: all var(--duration-fast) ease;
+}
+.filter-btn:hover {
+  border-color: var(--c-accent-subtle);
+  color: var(--c-accent);
+}
+.filter-btn.is-active {
+  background: var(--c-accent);
+  color: #fff;
+  border-color: var(--c-accent);
+}
+
+.projects__grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: var(--s-6);
+}
+
+.project-card {
+  background: var(--c-surface);
+  border: 1px solid var(--c-border-light);
+  border-radius: var(--radius-lg);
+  padding: var(--s-8);
+  transition: all var(--duration-base) var(--ease-out);
+  position: relative;
+  overflow: hidden;
+}
+.project-card:hover {
+  border-color: var(--c-accent-subtle);
+  box-shadow: 0 8px 32px rgba(15,0,191,0.08);
+  transform: translateY(-2px);
+}
+
+.project-card--flagship {
+  border-left: 3px solid var(--c-accent);
+}
+
+.project-card__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  margin-bottom: var(--s-4);
+  gap: var(--s-4);
+}
+
+.project-card__title {
+  font-size: var(--fs-xl);
+  font-weight: 700;
+}
+
+.project-card__badge {
+  padding: var(--s-1) var(--s-3);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  border-radius: 100px;
+  flex-shrink: 0;
+}
+.project-card__badge--flagship {
+  background: var(--c-accent-light);
+  color: var(--c-accent);
+}
+.project-card__badge--soon {
+  background: var(--c-surface-alt);
+  color: var(--c-text-tertiary);
+}
+
+.project-card__desc {
+  color: var(--c-text-secondary);
+  margin-bottom: var(--s-4);
+  max-width: 720px;
+}
+
+.project-card__tags {
+  display: flex;
+  gap: var(--s-2);
+  flex-wrap: wrap;
+  margin-bottom: var(--s-6);
+}
+
+.project-card__actions {
+  display: flex;
+  gap: var(--s-3);
+  flex-wrap: wrap;
+}
+
+@media (max-width: 768px) {
+  .project-card { padding: var(--s-6); }
+}
+
+/* ============================================================
+   4. WORLD MODEL LENS
+   ============================================================ */
+.wml {
+  background: var(--c-surface);
+  border-top: 1px solid var(--c-border-light);
+  border-bottom: 1px solid var(--c-border-light);
+}
+
+.wml__intro {
+  max-width: 720px;
+  margin-bottom: var(--s-12);
+}
+
+.wml__intro p {
+  color: var(--c-text-secondary);
+  margin-bottom: var(--s-4);
+}
+
+.wml__inspiration {
+  font-size: var(--fs-sm);
+  color: var(--c-text-tertiary);
+  font-style: italic;
+}
+
+/* Feature Pillars */
+.wml__pillars {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: var(--s-6);
+  margin-bottom: var(--s-16);
+}
+
+.pillar {
+  background: var(--c-bg);
+  border: 1px solid var(--c-border-light);
+  border-radius: var(--radius-md);
+  padding: var(--s-6);
+  transition: all var(--duration-base) var(--ease-out);
+}
+.pillar:hover {
+  border-color: var(--c-accent-subtle);
+  box-shadow: 0 4px 16px rgba(15,0,191,0.06);
+}
+
+.pillar__icon {
+  width: 40px;
+  height: 40px;
+  border-radius: var(--radius-sm);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: var(--s-4);
+  font-size: var(--fs-lg);
+}
+.pillar__icon--obs { background: #EDEAFF; color: #0F00BF; }
+.pillar__icon--replay { background: #EEF2FF; color: #4F46E5; }
+.pillar__icon--causal { background: #FFF7ED; color: #C2410C; }
+.pillar__icon--safety { background: #FEF2F2; color: #B91C1C; }
+.pillar__icon--probing { background: #F0F9FF; color: #0369A1; }
+
+.pillar__title {
+  font-size: var(--fs-base);
+  font-weight: 700;
+  margin-bottom: var(--s-3);
+}
+
+.pillar__features {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+}
+
+.pillar__feature {
+  font-size: var(--fs-sm);
+  color: var(--c-text-secondary);
+  padding-left: var(--s-4);
+  position: relative;
+}
+.pillar__feature::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 8px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--c-accent-subtle);
+}
+
+/* Architecture */
+.wml__arch-title {
+  font-size: var(--fs-xl);
+  font-weight: 700;
+  margin-bottom: var(--s-8);
+}
+
+.wml__arch-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--s-6);
+  margin-bottom: var(--s-12);
+}
+
+.arch-card {
+  padding: var(--s-6);
+  background: var(--c-bg);
+  border: 1px solid var(--c-border-light);
+  border-radius: var(--radius-md);
+}
+
+.arch-card__title {
+  font-size: var(--fs-base);
+  font-weight: 700;
+  margin-bottom: var(--s-3);
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+}
+
+.arch-card__desc {
+  font-size: var(--fs-sm);
+  color: var(--c-text-secondary);
+}
+
+.wml__actions {
+  display: flex;
+  gap: var(--s-3);
+  flex-wrap: wrap;
+}
+
+@media (max-width: 768px) {
+  .wml__arch-grid { grid-template-columns: 1fr; }
+}
+
+/* ============================================================
+   5. DASHBOARDS
+   ============================================================ */
+.dashboards {
+  background: var(--c-text);
+  color: #fff;
+  position: relative;
+  overflow: hidden;
+}
+
+.dashboards .section-label { color: rgba(255,255,255,0.5); }
+.dashboards .section-title { color: #fff; }
+.dashboards .section-subtitle { color: rgba(255,255,255,0.6); }
+
+.dash__controls {
+  display: flex;
+  gap: var(--s-2);
+  margin-bottom: var(--s-8);
+}
+
+.dash__time-btn {
+  padding: var(--s-1) var(--s-4);
+  font-size: var(--fs-xs);
+  font-weight: 500;
+  color: rgba(255,255,255,0.4);
+  background: rgba(255,255,255,0.06);
+  border: 1px solid rgba(255,255,255,0.1);
+  border-radius: 100px;
+  transition: all var(--duration-fast) ease;
+}
+.dash__time-btn:hover {
+  color: rgba(255,255,255,0.7);
+  border-color: rgba(255,255,255,0.2);
+}
+.dash__time-btn.is-active {
+  background: var(--c-accent);
+  color: #fff;
+  border-color: var(--c-accent);
+}
+
+.dash__grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  grid-template-rows: auto auto;
+  gap: var(--s-5);
+}
+
+.dash__tile {
+  background: rgba(255,255,255,0.04);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: var(--radius-md);
+  padding: var(--s-6);
+  transition: border-color var(--duration-fast) ease;
+  position: relative;
+}
+.dash__tile:hover {
+  border-color: rgba(255,255,255,0.15);
+}
+
+.dash__tile--wide {
+  grid-column: span 2;
+}
+
+.dash__tile-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: var(--s-4);
+}
+
+.dash__tile-title {
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  color: rgba(255,255,255,0.7);
+}
+
+.dash__tile-status {
+  display: flex;
+  align-items: center;
+  gap: var(--s-1);
+  font-size: var(--fs-xs);
+  color: rgba(255,255,255,0.4);
+}
+
+.dash__tile-status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #22C55E;
+}
+
+.dash__big-number {
+  font-size: var(--fs-3xl);
+  font-weight: 700;
+  color: #fff;
+  line-height: 1;
+  margin-bottom: var(--s-1);
+  font-variant-numeric: tabular-nums;
+}
+
+.dash__big-label {
+  font-size: var(--fs-xs);
+  color: rgba(255,255,255,0.4);
+}
+
+.dash__big-change {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-1);
+  font-size: var(--fs-xs);
+  font-weight: 500;
+  margin-top: var(--s-2);
+  padding: 2px var(--s-2);
+  border-radius: 4px;
+}
+.dash__big-change--up {
+  color: #22C55E;
+  background: rgba(34,197,94,0.1);
+}
+
+/* Sparkline canvas */
+.sparkline-container {
+  width: 100%;
+  height: 60px;
+  margin-top: var(--s-4);
+}
+
+/* Chart container */
+.chart-container {
+  width: 100%;
+  height: 200px;
+  margin-top: var(--s-4);
+  position: relative;
+}
+
+/* Bar chart in dashboard */
+.dash__bars {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--s-2);
+  height: 120px;
+  margin-top: var(--s-4);
+}
+
+.dash__bar-group {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--s-1);
+}
+
+.dash__bar {
+  width: 100%;
+  max-width: 40px;
+  border-radius: 4px 4px 0 0;
+  transition: height 1s var(--ease-out);
+}
+
+.dash__bar-label {
+  font-size: 10px;
+  color: rgba(255,255,255,0.35);
+  text-align: center;
+}
+
+/* Mini list in dashboard */
+.dash__list {
+  list-style: none;
+  margin-top: var(--s-4);
+}
+.dash__list-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--s-2) 0;
+  border-bottom: 1px solid rgba(255,255,255,0.06);
+  font-size: var(--fs-sm);
+}
+.dash__list-item:last-child { border-bottom: none; }
+
+.dash__list-name {
+  color: rgba(255,255,255,0.7);
+}
+.dash__list-value {
+  font-weight: 600;
+  color: #fff;
+  font-variant-numeric: tabular-nums;
+}
+
+@media (max-width: 768px) {
+  .dash__grid {
+    grid-template-columns: 1fr;
+  }
+  .dash__tile--wide { grid-column: span 1; }
+}
+
+/* ============================================================
+   6. RESEARCH
+   ============================================================ */
+.research__themes {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-12);
+}
+
+.research__theme {
+  display: grid;
+  grid-template-columns: 280px 1fr;
+  gap: var(--s-10);
+}
+
+.research__theme-title {
+  font-size: var(--fs-base);
+  font-weight: 700;
+  margin-bottom: var(--s-2);
+  position: sticky;
+  top: calc(var(--nav-h) + var(--s-6));
+}
+
+.research__theme-desc {
+  font-size: var(--fs-sm);
+  color: var(--c-text-secondary);
+}
+
+.research__items {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-4);
+}
+
+.research__item {
+  padding: var(--s-4) var(--s-5);
+  background: var(--c-surface);
+  border: 1px solid var(--c-border-light);
+  border-radius: var(--radius-sm);
+  transition: border-color var(--duration-fast) ease;
+}
+.research__item:hover {
+  border-color: var(--c-accent-subtle);
+}
+
+.research__item-title {
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  margin-bottom: var(--s-1);
+}
+
+.research__item-meta {
+  font-size: var(--fs-xs);
+  color: var(--c-text-tertiary);
+  display: flex;
+  gap: var(--s-3);
+  align-items: center;
+}
+
+.research__item-badge {
+  padding: 1px var(--s-2);
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  border-radius: 3px;
+}
+.research__item-badge--preprint {
+  background: #FFF7ED;
+  color: #C2410C;
+}
+.research__item-badge--workshop {
+  background: #EEF2FF;
+  color: #4F46E5;
+}
+.research__item-badge--talk {
+  background: #F0F9FF;
+  color: #0369A1;
+}
+.research__item-badge--blog {
+  background: var(--c-accent-light);
+  color: var(--c-accent);
+}
+
+@media (max-width: 768px) {
+  .research__theme {
+    grid-template-columns: 1fr;
+    gap: var(--s-4);
+  }
+}
+
+/* ============================================================
+   7. PEOPLE
+   ============================================================ */
+.people__intro {
+  color: var(--c-text-secondary);
+  max-width: 560px;
+  margin-bottom: var(--s-10);
+}
+
+.people__grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: var(--s-6);
+  margin-bottom: var(--s-10);
+}
+
+.person-card {
+  background: var(--c-surface);
+  border: 1px solid var(--c-border-light);
+  border-radius: var(--radius-md);
+  padding: var(--s-6);
+  transition: all var(--duration-base) var(--ease-out);
+}
+.person-card:hover {
+  border-color: var(--c-accent-subtle);
+  transform: translateY(-2px);
+  box-shadow: 0 4px 16px rgba(0,0,0,0.06);
+}
+
+.person-card__avatar {
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  background: var(--c-accent-light);
+  color: var(--c-accent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  font-size: var(--fs-base);
+  margin-bottom: var(--s-4);
+}
+
+.person-card__name {
+  font-weight: 700;
+  font-size: var(--fs-base);
+  margin-bottom: var(--s-1);
+}
+
+.person-card__role {
+  font-size: var(--fs-sm);
+  color: var(--c-text-secondary);
+  margin-bottom: var(--s-2);
+}
+
+.person-card__focus {
+  font-size: var(--fs-xs);
+  color: var(--c-text-tertiary);
+  font-style: italic;
+}
+
+.person-card__links {
+  display: flex;
+  gap: var(--s-3);
+  margin-top: var(--s-4);
+  padding-top: var(--s-4);
+  border-top: 1px solid var(--c-border-light);
+}
+
+.person-card__link {
+  font-size: var(--fs-xs);
+  font-weight: 500;
+  color: var(--c-text-secondary);
+}
+.person-card__link:hover { color: var(--c-accent); }
+
+/* ============================================================
+   8. DEMOS
+   ============================================================ */
+.demos__intro {
+  color: var(--c-text-secondary);
+  max-width: 640px;
+  margin-bottom: var(--s-8);
+}
+
+.demos__group {
+  margin-bottom: var(--s-10);
+}
+
+.demos__group-title {
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--c-text-tertiary);
+  margin-bottom: var(--s-4);
+  padding-bottom: var(--s-2);
+  border-bottom: 1px solid var(--c-border-light);
+}
+
+.demos__list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: var(--s-4);
+}
+
+.demo-card {
+  background: var(--c-surface);
+  border: 1px solid var(--c-border-light);
+  border-radius: var(--radius-md);
+  padding: var(--s-5);
+  transition: all var(--duration-base) var(--ease-out);
+}
+.demo-card:hover {
+  border-color: var(--c-accent-subtle);
+  box-shadow: 0 4px 16px rgba(15,0,191,0.06);
+  transform: translateY(-1px);
+}
+
+.demo-card__title {
+  font-weight: 600;
+  margin-bottom: var(--s-2);
+}
+
+.demo-card__desc {
+  font-size: var(--fs-sm);
+  color: var(--c-text-secondary);
+  margin-bottom: var(--s-3);
+}
+
+.demo-card__illustrates {
+  font-size: var(--fs-xs);
+  color: var(--c-text-tertiary);
+  margin-bottom: var(--s-4);
+}
+
+.demo-card__links {
+  display: flex;
+  gap: var(--s-3);
+}
+
+/* ============================================================
+   9. GET INVOLVED
+   ============================================================ */
+.involved {
+  background: var(--c-surface);
+  border-top: 1px solid var(--c-border-light);
+  border-bottom: 1px solid var(--c-border-light);
+}
+
+.involved__grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: var(--s-8);
+}
+
+.involved__card {
+  padding: var(--s-6);
+  background: var(--c-bg);
+  border: 1px solid var(--c-border-light);
+  border-radius: var(--radius-md);
+}
+
+.involved__card-icon {
+  width: 40px;
+  height: 40px;
+  border-radius: var(--radius-sm);
+  background: var(--c-accent-light);
+  color: var(--c-accent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: var(--s-4);
+}
+
+.involved__card-title {
+  font-size: var(--fs-base);
+  font-weight: 700;
+  margin-bottom: var(--s-3);
+}
+
+.involved__card-desc {
+  font-size: var(--fs-sm);
+  color: var(--c-text-secondary);
+  margin-bottom: var(--s-4);
+}
+
+.involved__card-list {
+  list-style: none;
+  font-size: var(--fs-sm);
+  color: var(--c-text-secondary);
+}
+.involved__card-list li {
+  padding: var(--s-1) 0;
+  padding-left: var(--s-4);
+  position: relative;
+}
+.involved__card-list li::before {
+  content: '→';
+  position: absolute;
+  left: 0;
+  color: var(--c-accent);
+}
+
+@media (max-width: 768px) {
+  .involved__grid { grid-template-columns: 1fr; }
+}
+
+/* ============================================================
+   10. RESOURCES
+   ============================================================ */
+.resources__grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--s-8);
+  margin-bottom: var(--s-10);
+}
+
+.resource-link {
+  display: flex;
+  align-items: center;
+  gap: var(--s-4);
+  padding: var(--s-5);
+  background: var(--c-surface);
+  border: 1px solid var(--c-border-light);
+  border-radius: var(--radius-md);
+  text-decoration: none;
+  color: var(--c-text);
+  transition: all var(--duration-fast) ease;
+}
+.resource-link:hover {
+  border-color: var(--c-accent-subtle);
+  color: var(--c-text);
+  box-shadow: 0 2px 8px rgba(0,0,0,0.04);
+}
+
+.resource-link__icon {
+  width: 40px;
+  height: 40px;
+  border-radius: var(--radius-sm);
+  background: var(--c-surface-alt);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.resource-link__title {
+  font-weight: 600;
+  font-size: var(--fs-sm);
+}
+
+.resource-link__desc {
+  font-size: var(--fs-xs);
+  color: var(--c-text-tertiary);
+}
+
+/* Quick Start */
+.quickstart {
+  background: var(--c-text);
+  color: #fff;
+  border-radius: var(--radius-lg);
+  padding: var(--s-8);
+  overflow: hidden;
+}
+
+.quickstart__title {
+  font-size: var(--fs-base);
+  font-weight: 700;
+  margin-bottom: var(--s-2);
+}
+
+.quickstart__desc {
+  font-size: var(--fs-sm);
+  color: rgba(255,255,255,0.6);
+  margin-bottom: var(--s-6);
+}
+
+.quickstart__code {
+  background: rgba(255,255,255,0.06);
+  border: 1px solid rgba(255,255,255,0.1);
+  border-radius: var(--radius-sm);
+  padding: var(--s-5);
+  overflow-x: auto;
+}
+
+.quickstart__code pre {
+  font-family: var(--f-mono);
+  font-size: var(--fs-sm);
+  line-height: 1.7;
+  color: rgba(255,255,255,0.85);
+  white-space: pre;
+}
+
+.quickstart__code .comment { color: rgba(255,255,255,0.35); }
+.quickstart__code .keyword { color: #7DD3FC; }
+.quickstart__code .string { color: #86EFAC; }
+.quickstart__code .func { color: #FDE68A; }
+
+@media (max-width: 768px) {
+  .resources__grid { grid-template-columns: 1fr; }
+}
+
+/* ============================================================
+   11. FOOTER
+   ============================================================ */
+.footer {
+  background: var(--c-text);
+  color: rgba(255,255,255,0.5);
+  padding: var(--s-12) 0 var(--s-8);
+  font-size: var(--fs-sm);
+}
+
+.footer__inner {
+  display: grid;
+  grid-template-columns: 2fr 1fr 1fr 1fr;
+  gap: var(--s-10);
+  margin-bottom: var(--s-10);
+}
+
+.footer__brand {
+  max-width: 280px;
+}
+
+.footer__logo {
+  font-weight: 700;
+  color: #fff;
+  font-size: var(--fs-base);
+  margin-bottom: var(--s-3);
+}
+
+.footer__tagline {
+  color: rgba(255,255,255,0.4);
+  font-size: var(--fs-sm);
+  line-height: var(--lh-base);
+}
+
+.footer__heading {
+  font-weight: 600;
+  color: rgba(255,255,255,0.7);
+  margin-bottom: var(--s-4);
+  font-size: var(--fs-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.footer__list {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+}
+.footer__list a {
+  color: rgba(255,255,255,0.4);
+  text-decoration: none;
+  transition: color var(--duration-fast) ease;
+  font-size: var(--fs-sm);
+}
+.footer__list a:hover { color: rgba(255,255,255,0.8); }
+
+.footer__bottom {
+  padding-top: var(--s-6);
+  border-top: 1px solid rgba(255,255,255,0.08);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--s-4);
+}
+
+.footer__copy {
+  color: rgba(255,255,255,0.3);
+  font-size: var(--fs-xs);
+}
+
+.footer__credits {
+  color: rgba(255,255,255,0.3);
+  font-size: var(--fs-xs);
+}
+
+@media (max-width: 768px) {
+  .footer__inner {
+    grid-template-columns: 1fr 1fr;
+    gap: var(--s-8);
+  }
+  .footer__brand { grid-column: span 2; }
+}
+
+/* ============================================================
+   SVG ICONS (inline)
+   ============================================================ */
+.icon { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.icon-sm { width: 14px; height: 14px; }
+.icon-lg { width: 20px; height: 20px; }
+</style>
+</head>
+<body>
+
+<!-- ============================================================
+     NAVIGATION
+     ============================================================ -->
+<nav class="nav" id="nav" role="navigation" aria-label="Main navigation">
+  <div class="nav__inner">
+    <a href="#home" class="nav__logo" aria-label="Elemental Research Lab — Home">
+      <div class="nav__logo-icon">
+        <svg width="30" height="30" viewBox="0 0 512 512" fill="none" aria-hidden="true">
+          <circle cx="256" cy="256" r="180" stroke="#0F00BF" stroke-width="50" stroke-linecap="round" fill="none"/>
+          <line x1="98" y1="414" x2="414" y2="98" stroke="#0F00BF" stroke-width="50" stroke-linecap="round"/>
+        </svg>
+      </div>
+      Elemental Research Lab
+    </a>
+
+    <ul class="nav__links">
+      <li><a href="#home" class="nav__link is-active">Home</a></li>
+      <li><a href="#lab" class="nav__link">Lab</a></li>
+      <li><a href="#projects" class="nav__link">Projects</a></li>
+      <li><a href="#wml" class="nav__link">World Model Lens</a></li>
+      <li><a href="#dashboards" class="nav__link">Dashboards</a></li>
+      <li><a href="#research" class="nav__link">Research</a></li>
+      <li><a href="#people" class="nav__link">People</a></li>
+      <li><a href="#involved" class="nav__link">Get Involved</a></li>
+    </ul>
+
+    <a href="https://github.com/elemental-research-lab" class="nav__github" target="_blank" rel="noopener noreferrer" aria-label="View on GitHub">
+      <svg class="icon" viewBox="0 0 24 24"><path d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 0 0-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0 0 20 4.77 5.07 5.07 0 0 0 19.91 1S18.73.65 16 2.48a13.38 13.38 0 0 0-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 0 0 5 4.77a5.44 5.44 0 0 0-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 0 0 9 18.13V22"></path></svg>
+      GitHub
+    </a>
+
+    <button class="nav__toggle" id="navToggle" aria-label="Toggle navigation menu" aria-expanded="false">
+      <div class="nav__toggle-icon">
+        <span></span><span></span><span></span>
+      </div>
+    </button>
+  </div>
+</nav>
+
+<div class="nav__mobile" id="navMobile">
+  <ul class="nav__mobile-links">
+    <li><a href="#home" class="nav__mobile-link" data-nav-close>Home</a></li>
+    <li><a href="#lab" class="nav__mobile-link" data-nav-close>Lab</a></li>
+    <li><a href="#projects" class="nav__mobile-link" data-nav-close>Projects</a></li>
+    <li><a href="#wml" class="nav__mobile-link" data-nav-close>World Model Lens</a></li>
+    <li><a href="#dashboards" class="nav__mobile-link" data-nav-close>Dashboards</a></li>
+    <li><a href="#research" class="nav__mobile-link" data-nav-close>Research</a></li>
+    <li><a href="#people" class="nav__mobile-link" data-nav-close>People</a></li>
+    <li><a href="#demos" class="nav__mobile-link" data-nav-close>Demos</a></li>
+    <li><a href="#involved" class="nav__mobile-link" data-nav-close>Get Involved</a></li>
+    <li><a href="#resources" class="nav__mobile-link" data-nav-close>Resources</a></li>
+    <li><a href="#contact" class="nav__mobile-link" data-nav-close>Contact</a></li>
+  </ul>
+</div>
+
+<main>
+
+<!-- ============================================================
+     1. HERO
+     ============================================================ -->
+<section class="hero section" id="home">
+  <div class="container">
+    <div class="hero__grid">
+      <div class="hero__content">
+        <div class="hero__badge reveal">
+          <span class="hero__badge-dot"></span>
+          Active Research
+        </div>
+        <h1 class="hero__title reveal reveal-delay-1">
+          Interpretability and safety for <em>world&#8209;model</em> AI&nbsp;systems.
+        </h1>
+        <p class="hero__desc reveal reveal-delay-2">
+          We build tools, methods, and benchmarks to analyze, debug, and stress-test world models used in reinforcement learning, autonomous systems, and AI safety.
+        </p>
+        <p class="hero__wml reveal reveal-delay-3">
+          Our flagship project, <strong>World Model Lens</strong>, is a research-oriented toolkit for observability and interpretability of world models.
+        </p>
+        <div class="hero__actions reveal reveal-delay-3">
+          <a href="#dashboards" class="btn btn-primary">
+            Explore Dashboards
+            <svg class="icon-sm" viewBox="0 0 24 24"><path d="M5 12h14M12 5l7 7-7 7" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </a>
+          <a href="#wml" class="btn btn-secondary">View World Model Lens</a>
+          <a href="#involved" class="btn btn-ghost">Collaborate with us</a>
+        </div>
+      </div>
+
+      <div class="hero__visual reveal reveal-delay-2">
+        <canvas class="hero__canvas" id="heroCanvas" aria-hidden="true"></canvas>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================
+     2. LAB OVERVIEW
+     ============================================================ -->
+<section class="section" id="lab">
+  <div class="container">
+    <div class="lab-overview__top">
+      <div class="lab-overview__mission reveal">
+        <p class="section-label">The Lab</p>
+        <h2 class="section-title">Elemental Research Lab</h2>
+        <p>
+          Elemental Research Lab is an independent, cross-institutional research group dedicated to making world models interpretable, reliable, and safe. We develop evaluation infrastructure, reproducible benchmarks, and open-source tooling for the world-model research community.
+        </p>
+        <p>
+          Our work spans reinforcement learning, autonomous systems, scientific simulation, and AI safety — anywhere a learned world model makes predictions about the future and an agent acts on those predictions.
+        </p>
+      </div>
+
+      <div class="reveal reveal-delay-1">
+        <ul class="lab-overview__focus">
+          <li class="lab-overview__focus-item">
+            <div class="lab-overview__focus-icon">
+              <svg class="icon-lg" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="2" fill="none"/><path d="M12 16v-4M12 8h.01" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+            </div>
+            <div>
+              <div class="lab-overview__focus-title">World-Model Interpretability</div>
+              <div class="lab-overview__focus-desc">Tools to inspect activations, beliefs, uncertainties, and learned dynamics inside world models.</div>
+            </div>
+          </li>
+          <li class="lab-overview__focus-item">
+            <div class="lab-overview__focus-icon">
+              <svg class="icon-lg" viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" stroke="currentColor" stroke-width="2" fill="none"/></svg>
+            </div>
+            <div>
+              <div class="lab-overview__focus-title">Safety &amp; Robustness</div>
+              <div class="lab-overview__focus-desc">Auditing world-model-based agents for failure modes, hallucinations, and distributional shift.</div>
+            </div>
+          </li>
+          <li class="lab-overview__focus-item">
+            <div class="lab-overview__focus-icon">
+              <svg class="icon-lg" viewBox="0 0 24 24"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z" stroke="currentColor" stroke-width="2" fill="none"/></svg>
+            </div>
+            <div>
+              <div class="lab-overview__focus-title">Research Infrastructure</div>
+              <div class="lab-overview__focus-desc">Open tooling, standardized logging, and reproducible evaluation pipelines for the research community.</div>
+            </div>
+          </li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="lab-metrics reveal">
+      <div class="lab-metric">
+        <div class="lab-metric__value" data-counter="4">0</div>
+        <div class="lab-metric__label">Active Projects</div>
+      </div>
+      <div class="lab-metric">
+        <div class="lab-metric__value" data-counter="5">0</div>
+        <div class="lab-metric__label">Institutions</div>
+      </div>
+      <div class="lab-metric">
+        <div class="lab-metric__value" data-counter="12">0</div>
+        <div class="lab-metric__label">Demos &amp; Benchmarks</div>
+      </div>
+      <div class="lab-metric">
+        <div class="lab-metric__value" data-counter="18">0</div>
+        <div class="lab-metric__label">Contributors</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<hr class="divider container">
+
+<!-- ============================================================
+     3. PROJECTS
+     ============================================================ -->
+<section class="section" id="projects">
+  <div class="container">
+    <p class="section-label reveal">Projects</p>
+    <h2 class="section-title reveal">Lab Portfolio</h2>
+    <p class="section-subtitle reveal">World Model Lens is our flagship project, with additional initiatives expanding the lab's scope in safety, benchmarking, and systems auditing.</p>
+
+    <div class="projects__filters reveal" style="margin-top: var(--s-8);">
+      <button class="filter-btn is-active" data-filter="all">All</button>
+      <button class="filter-btn" data-filter="interpretability">Interpretability</button>
+      <button class="filter-btn" data-filter="safety">Safety</button>
+      <button class="filter-btn" data-filter="infrastructure">Infrastructure</button>
+    </div>
+
+    <div class="projects__grid">
+      <article class="project-card project-card--flagship reveal" data-tags="interpretability safety infrastructure">
+        <div class="project-card__header">
+          <h3 class="project-card__title">World Model Lens</h3>
+          <span class="project-card__badge project-card__badge--flagship">Flagship</span>
+        </div>
+        <p class="project-card__desc">
+          A research-oriented software toolkit for analyzing, debugging, and understanding world models. Provides observability, replay, causal analysis, safety auditing, and probing tools so researchers can inspect activations, beliefs, uncertainties, and failure modes in a structured way.
+        </p>
+        <div class="project-card__tags">
+          <span class="tag tag--accent">interpretability</span>
+          <span class="tag tag--accent">world models</span>
+          <span class="tag tag--accent">safety tooling</span>
+          <span class="tag">RL</span>
+          <span class="tag">robotics</span>
+        </div>
+        <div class="project-card__actions">
+          <a href="#wml" class="btn btn-primary btn--sm">Learn More</a>
+          <a href="https://github.com/elemental-research-lab/world-model-lens" class="btn btn-secondary btn--sm" target="_blank" rel="noopener">View GitHub</a>
+        </div>
+      </article>
+
+      <article class="project-card reveal reveal-delay-1" data-tags="safety">
+        <div class="project-card__header">
+          <h3 class="project-card__title">World Model Safety Benchmarks</h3>
+          <span class="project-card__badge project-card__badge--soon">Coming Soon</span>
+        </div>
+        <p class="project-card__desc">
+          A standardized suite of safety benchmarks for evaluating world-model robustness, distributional shift detection, and failure-mode coverage across RL and autonomous-driving domains.
+        </p>
+        <div class="project-card__tags">
+          <span class="tag">safety</span>
+          <span class="tag">benchmarks</span>
+          <span class="tag">evaluation</span>
+        </div>
+      </article>
+
+      <article class="project-card reveal reveal-delay-2" data-tags="safety infrastructure">
+        <div class="project-card__header">
+          <h3 class="project-card__title">Autonomous Systems Audit Tools</h3>
+          <span class="project-card__badge project-card__badge--soon">Coming Soon</span>
+        </div>
+        <p class="project-card__desc">
+          End-to-end audit pipelines for world-model-based autonomous agents, combining safety checks, causal analysis, and compliance reporting into reproducible workflows.
+        </p>
+        <div class="project-card__tags">
+          <span class="tag">autonomous systems</span>
+          <span class="tag">safety</span>
+          <span class="tag">infrastructure</span>
+        </div>
+      </article>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================
+     4. WORLD MODEL LENS
+     ============================================================ -->
+<section class="wml section" id="wml">
+  <div class="container">
+    <p class="section-label reveal">Flagship Project</p>
+    <h2 class="section-title reveal">World Model Lens</h2>
+
+    <div class="wml__intro reveal">
+      <p>
+        World Model Lens is a research-oriented software toolkit for analyzing, debugging, and understanding world models — including Dreamer-style RSSMs, JEPA, transformers, video prediction models, and robotics/autonomous-driving world models.
+      </p>
+      <p>
+        It provides observability, replay, causal analysis, safety auditing, and probing tools so researchers can inspect activations, beliefs, uncertainties, and failure modes in a structured way. The goal is to make world models more interpretable, safer, and easier to debug.
+      </p>
+      <p>
+        World Model Lens standardizes logging, analysis, and benchmarks so that different groups can compare and reproduce findings on world-model behavior.
+      </p>
+      <p class="wml__inspiration">
+        Inspired by Neel Nanda's TransformerLens and the AgentLens library from MATS alumni, adapted for world models rather than language models.
+      </p>
+    </div>
+
+    <!-- Feature Pillars -->
+    <h3 style="font-size: var(--fs-lg); font-weight: 700; margin-bottom: var(--s-6);" class="reveal">Feature Pillars</h3>
+    <div class="wml__pillars">
+      <div class="pillar reveal">
+        <div class="pillar__icon pillar__icon--obs">
+          <svg class="icon-lg" viewBox="0 0 24 24"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" stroke="currentColor" stroke-width="2" fill="none"/><circle cx="12" cy="12" r="3" stroke="currentColor" stroke-width="2" fill="none"/></svg>
+        </div>
+        <h4 class="pillar__title">Observability Infrastructure</h4>
+        <ul class="pillar__features">
+          <li class="pillar__feature">Activation caching across timesteps and modules</li>
+          <li class="pillar__feature">Saliency maps over trajectories</li>
+          <li class="pillar__feature">Surprise detection and belief tracking</li>
+        </ul>
+      </div>
+
+      <div class="pillar reveal reveal-delay-1">
+        <div class="pillar__icon pillar__icon--replay">
+          <svg class="icon-lg" viewBox="0 0 24 24"><path d="M1 4v6h6" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </div>
+        <h4 class="pillar__title">Replay &amp; Counterfactual Analysis</h4>
+        <ul class="pillar__features">
+          <li class="pillar__feature">Trajectory replay for full episodes</li>
+          <li class="pillar__feature">Intervention replay by changing inputs, hidden states, and actions</li>
+          <li class="pillar__feature">Imagination branching and "what-if" rollouts</li>
+        </ul>
+      </div>
+
+      <div class="pillar reveal reveal-delay-2">
+        <div class="pillar__icon pillar__icon--causal">
+          <svg class="icon-lg" viewBox="0 0 24 24"><circle cx="18" cy="5" r="3" stroke="currentColor" stroke-width="2" fill="none"/><circle cx="6" cy="12" r="3" stroke="currentColor" stroke-width="2" fill="none"/><circle cx="18" cy="19" r="3" stroke="currentColor" stroke-width="2" fill="none"/><path d="M8.59 13.51l6.83 3.98M15.41 6.51l-6.82 3.98" stroke="currentColor" stroke-width="2" fill="none"/></svg>
+        </div>
+        <h4 class="pillar__title">Causal &amp; Mechanistic Analysis</h4>
+        <ul class="pillar__features">
+          <li class="pillar__feature">Causal tracing through world-model computation</li>
+          <li class="pillar__feature">Circuit discovery and path patching</li>
+          <li class="pillar__feature">Bottleneck detection for critical components</li>
+        </ul>
+      </div>
+
+      <div class="pillar reveal reveal-delay-3">
+        <div class="pillar__icon pillar__icon--safety">
+          <svg class="icon-lg" viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" stroke="currentColor" stroke-width="2" fill="none"/><path d="M9 12l2 2 4-4" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </div>
+        <h4 class="pillar__title">Safety-First Tooling</h4>
+        <ul class="pillar__features">
+          <li class="pillar__feature">Out-of-distribution detection</li>
+          <li class="pillar__feature">Hallucination and failure-mode analysis</li>
+          <li class="pillar__feature">Robustness testing and safety audits</li>
+        </ul>
+      </div>
+
+      <div class="pillar reveal reveal-delay-4">
+        <div class="pillar__icon pillar__icon--probing">
+          <svg class="icon-lg" viewBox="0 0 24 24"><path d="M22 12h-4l-3 9L9 3l-3 9H2" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </div>
+        <h4 class="pillar__title">Standardized Probing &amp; Metrics</h4>
+        <ul class="pillar__features">
+          <li class="pillar__feature">Linear and semantic probes (DINO/CLIP-style)</li>
+          <li class="pillar__feature">Disentanglement metrics: MIG, DCI, SAP</li>
+          <li class="pillar__feature">Unified evaluation interface for model representations</li>
+        </ul>
+      </div>
+    </div>
+
+    <!-- Architecture -->
+    <h3 class="wml__arch-title reveal">How We Achieve This</h3>
+    <div class="wml__arch-grid">
+      <div class="arch-card reveal">
+        <h4 class="arch-card__title">
+          <svg class="icon" viewBox="0 0 24 24"><path d="M16 18l6-6-6-6M8 6l-6 6 6 6" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          HookedWorldModel Framework
+        </h4>
+        <p class="arch-card__desc">A hook and adapter system supporting multiple world-model backends — Dreamer-style RSSMs, JEPA, transformer world models, video prediction, and robotics models — through a unified hook API.</p>
+      </div>
+      <div class="arch-card reveal reveal-delay-1">
+        <h4 class="arch-card__title">
+          <svg class="icon" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" stroke="currentColor" stroke-width="2" fill="none"/><rect x="14" y="3" width="7" height="7" stroke="currentColor" stroke-width="2" fill="none"/><rect x="3" y="14" width="7" height="7" stroke="currentColor" stroke-width="2" fill="none"/><rect x="14" y="14" width="7" height="7" stroke="currentColor" stroke-width="2" fill="none"/></svg>
+          Reusable Analysis Modules
+        </h4>
+        <p class="arch-card__desc">Belief analyzer, causal tracer, and safety auditor as composable, independently testable modules that plug into any supported backend.</p>
+      </div>
+      <div class="arch-card reveal reveal-delay-2">
+        <h4 class="arch-card__title">
+          <svg class="icon" viewBox="0 0 24 24"><path d="M12 20V10M18 20V4M6 20v-4" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          Benchmarks &amp; Workflows
+        </h4>
+        <p class="arch-card__desc">Ready-to-run pipelines for RL, robotics, autonomous driving, and scientific simulation with a focus on reproducibility and end-to-end examples.</p>
+      </div>
+      <div class="arch-card reveal reveal-delay-3">
+        <h4 class="arch-card__title">
+          <svg class="icon" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" stroke="currentColor" stroke-width="2" fill="none"/><path d="M14 2v6h6M16 13H8M16 17H8M10 9H8" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round"/></svg>
+          Documentation &amp; Accessibility
+        </h4>
+        <p class="arch-card__desc">Clear instructions for plugging in custom models, extension points for new backends, probes, and metrics, plus comprehensive contribution guidelines.</p>
+      </div>
+    </div>
+
+    <div class="wml__actions reveal">
+      <a href="https://github.com/elemental-research-lab/world-model-lens" class="btn btn-primary" target="_blank" rel="noopener">
+        <svg class="icon-sm" viewBox="0 0 24 24"><path d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 0 0-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0 0 20 4.77 5.07 5.07 0 0 0 19.91 1S18.73.65 16 2.48a13.38 13.38 0 0 0-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 0 0 5 4.77a5.44 5.44 0 0 0-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 0 0 9 18.13V22" stroke="currentColor" stroke-width="2" fill="none"/></svg>
+        View GitHub Repo
+      </a>
+      <a href="#resources" class="btn btn-secondary">Read Documentation</a>
+      <a href="#demos" class="btn btn-ghost">Run a Demo Notebook</a>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================
+     5. DASHBOARDS
+     ============================================================ -->
+<section class="dashboards section" id="dashboards">
+  <div class="container">
+    <p class="section-label reveal">Live Instrumentation</p>
+    <h2 class="section-title reveal">Lab Dashboards</h2>
+    <p class="section-subtitle reveal">An at-a-glance view of lab activity, analysis runs, and community engagement — updated continuously.</p>
+
+    <div class="dash__controls reveal" style="margin-top: var(--s-6);">
+      <button class="dash__time-btn is-active" data-range="7d">Last 7 days</button>
+      <button class="dash__time-btn" data-range="30d">Last 30 days</button>
+      <button class="dash__time-btn" data-range="all">All time</button>
+    </div>
+
+    <div class="dash__grid">
+      <!-- Tile 1: Models Analyzed -->
+      <div class="dash__tile reveal">
+        <div class="dash__tile-header">
+          <span class="dash__tile-title">Models Analyzed</span>
+          <span class="dash__tile-status"><span class="dash__tile-status-dot"></span> Live</span>
+        </div>
+        <div class="dash__big-number" data-counter-dash="47">0</div>
+        <div class="dash__big-label">unique models this month</div>
+        <div class="dash__big-change dash__big-change--up">↑ 23% from last month</div>
+        <div class="sparkline-container">
+          <canvas id="sparkModels" aria-label="Models analyzed trend" role="img"></canvas>
+        </div>
+      </div>
+
+      <!-- Tile 2: Analysis Runs -->
+      <div class="dash__tile reveal reveal-delay-1">
+        <div class="dash__tile-header">
+          <span class="dash__tile-title">Analysis Runs</span>
+          <span class="dash__tile-status"><span class="dash__tile-status-dot"></span> Live</span>
+        </div>
+        <div class="dash__big-number" data-counter-dash="1284">0</div>
+        <div class="dash__big-label">total runs executed</div>
+        <div class="dash__big-change dash__big-change--up">↑ 18% from last month</div>
+        <div class="sparkline-container">
+          <canvas id="sparkRuns" aria-label="Analysis runs trend" role="img"></canvas>
+        </div>
+      </div>
+
+      <!-- Tile 3: Environments -->
+      <div class="dash__tile reveal reveal-delay-2">
+        <div class="dash__tile-header">
+          <span class="dash__tile-title">Environments</span>
+        </div>
+        <div class="dash__big-number" data-counter-dash="9">0</div>
+        <div class="dash__big-label">benchmark environments</div>
+        <div class="dash__bars" id="envBars">
+          <div class="dash__bar-group">
+            <div class="dash__bar" style="height: 0; background: var(--c-chart-1);" data-bar-h="80"></div>
+            <span class="dash__bar-label">RL</span>
+          </div>
+          <div class="dash__bar-group">
+            <div class="dash__bar" style="height: 0; background: var(--c-chart-2);" data-bar-h="52"></div>
+            <span class="dash__bar-label">Robo</span>
+          </div>
+          <div class="dash__bar-group">
+            <div class="dash__bar" style="height: 0; background: var(--c-chart-3);" data-bar-h="36"></div>
+            <span class="dash__bar-label">Sim</span>
+          </div>
+          <div class="dash__bar-group">
+            <div class="dash__bar" style="height: 0; background: var(--c-chart-4);" data-bar-h="64"></div>
+            <span class="dash__bar-label">AV</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Tile 4: Safety & Robustness (wide) -->
+      <div class="dash__tile dash__tile--wide reveal reveal-delay-1">
+        <div class="dash__tile-header">
+          <span class="dash__tile-title">Safety &amp; Robustness Runs</span>
+          <span class="dash__tile-status"><span class="dash__tile-status-dot"></span> Live</span>
+        </div>
+        <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: var(--s-6);">
+          <div>
+            <div class="dash__big-number" data-counter-dash="312" style="font-size: var(--fs-2xl);">0</div>
+            <div class="dash__big-label">safety audit runs</div>
+          </div>
+          <div>
+            <div class="dash__big-number" data-counter-dash="89" style="font-size: var(--fs-2xl);">0</div>
+            <div class="dash__big-label">OOD tests performed</div>
+          </div>
+          <div>
+            <div class="dash__big-number" data-counter-dash="3" style="font-size: var(--fs-2xl);">0</div>
+            <div class="dash__big-label">envs fully evaluated this week</div>
+          </div>
+        </div>
+        <div class="chart-container">
+          <canvas id="safetyChart" aria-label="Safety runs over time" role="img"></canvas>
+        </div>
+      </div>
+
+      <!-- Tile 5: Collaboration -->
+      <div class="dash__tile reveal reveal-delay-2">
+        <div class="dash__tile-header">
+          <span class="dash__tile-title">Collaboration</span>
+        </div>
+        <div class="dash__big-number" data-counter-dash="5" style="font-size: var(--fs-2xl);">0</div>
+        <div class="dash__big-label">institutions collaborating</div>
+        <ul class="dash__list">
+          <li class="dash__list-item">
+            <span class="dash__list-name">NYU</span>
+            <span class="dash__list-value">4</span>
+          </li>
+          <li class="dash__list-item">
+            <span class="dash__list-name">USC</span>
+            <span class="dash__list-value">3</span>
+          </li>
+          <li class="dash__list-item">
+            <span class="dash__list-name">Mercity</span>
+            <span class="dash__list-value">5</span>
+          </li>
+          <li class="dash__list-item">
+            <span class="dash__list-name">Elemental Labs</span>
+            <span class="dash__list-value">4</span>
+          </li>
+          <li class="dash__list-item">
+            <span class="dash__list-name">Independent</span>
+            <span class="dash__list-value">2</span>
+          </li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================
+     6. RESEARCH
+     ============================================================ -->
+<section class="section" id="research">
+  <div class="container">
+    <p class="section-label reveal">Research</p>
+    <h2 class="section-title reveal">Research Agenda &amp; Outputs</h2>
+    <p class="section-subtitle reveal" style="margin-bottom: var(--s-12);">Our research focuses on making world models transparent, auditable, and safe — from fundamental interpretability methods to practical evaluation infrastructure.</p>
+
+    <div class="research__themes">
+      <div class="research__theme reveal">
+        <div>
+          <h3 class="research__theme-title">World-Model Interpretability</h3>
+          <p class="research__theme-desc">Understanding what world models learn, how they represent beliefs about the environment, and which internal structures drive predictions and decisions.</p>
+        </div>
+        <div class="research__items">
+          <div class="research__item">
+            <div class="research__item-title">Mechanistic Interpretability of Dreamer-Style World Models</div>
+            <div class="research__item-meta">
+              <span class="research__item-badge research__item-badge--preprint">Preprint</span>
+              <span>2026</span>
+            </div>
+          </div>
+          <div class="research__item">
+            <div class="research__item-title">Belief State Probing in Recurrent World Models</div>
+            <div class="research__item-meta">
+              <span class="research__item-badge research__item-badge--workshop">Workshop</span>
+              <span>ICML 2026</span>
+            </div>
+          </div>
+          <div class="research__item">
+            <div class="research__item-title">Causal Tracing for World-Model Predictions</div>
+            <div class="research__item-meta">
+              <span class="research__item-badge research__item-badge--blog">Blog Post</span>
+              <span>2026</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="research__theme reveal">
+        <div>
+          <h3 class="research__theme-title">Safety &amp; Robustness</h3>
+          <p class="research__theme-desc">Detecting and characterizing failure modes, hallucinations, and distributional fragility in world-model-based agents before deployment.</p>
+        </div>
+        <div class="research__items">
+          <div class="research__item">
+            <div class="research__item-title">Hallucination Detection in Learned Dynamics Models</div>
+            <div class="research__item-meta">
+              <span class="research__item-badge research__item-badge--preprint">Preprint</span>
+              <span>2026</span>
+            </div>
+          </div>
+          <div class="research__item">
+            <div class="research__item-title">Stress-Testing World Models Under Distribution Shift</div>
+            <div class="research__item-meta">
+              <span class="research__item-badge research__item-badge--talk">Talk</span>
+              <span>AI Safety Summit 2026</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="research__theme reveal">
+        <div>
+          <h3 class="research__theme-title">Tools &amp; Infrastructure</h3>
+          <p class="research__theme-desc">Building the shared evaluation and analysis infrastructure that the world-model research community needs to compare, reproduce, and extend findings.</p>
+        </div>
+        <div class="research__items">
+          <div class="research__item">
+            <div class="research__item-title">World Model Lens: An Open Toolkit for World-Model Interpretability</div>
+            <div class="research__item-meta">
+              <span class="research__item-badge research__item-badge--preprint">Preprint</span>
+              <span>2026</span>
+            </div>
+          </div>
+          <div class="research__item">
+            <div class="research__item-title">Standardized Evaluation Protocols for World-Model Safety</div>
+            <div class="research__item-meta">
+              <span class="research__item-badge research__item-badge--blog">Blog Post</span>
+              <span>2026</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<hr class="divider container">
+
+<!-- ============================================================
+     7. PEOPLE
+     ============================================================ -->
+<section class="section" id="people">
+  <div class="container">
+    <p class="section-label reveal">People</p>
+    <h2 class="section-title reveal">The Team</h2>
+    <p class="people__intro reveal">Elemental Research Lab brings together researchers from multiple institutions, united by the goal of making world models interpretable, reliable, and safe.</p>
+
+    <div class="people__grid">
+      <div class="person-card reveal">
+        <div class="person-card__avatar">BC</div>
+        <div class="person-card__name">Bhavith Chandra</div>
+        <div class="person-card__role">Master's Student, NYU</div>
+        <div class="person-card__focus">World-model interpretability &amp; tooling</div>
+        <div class="person-card__links">
+          <a href="#" class="person-card__link">Scholar</a>
+          <a href="#" class="person-card__link">LinkedIn</a>
+        </div>
+      </div>
+
+      <div class="person-card reveal reveal-delay-1">
+        <div class="person-card__avatar">YG</div>
+        <div class="person-card__name">Yugandhar</div>
+        <div class="person-card__role">Master's Student, USC</div>
+        <div class="person-card__focus">Safety evaluation &amp; autonomous systems</div>
+        <div class="person-card__links">
+          <a href="#" class="person-card__link">Scholar</a>
+          <a href="#" class="person-card__link">LinkedIn</a>
+        </div>
+      </div>
+
+      <div class="person-card reveal reveal-delay-2">
+        <div class="person-card__avatar">RK</div>
+        <div class="person-card__name">Rishikesh</div>
+        <div class="person-card__role">Research, Mercity</div>
+        <div class="person-card__focus">Causal analysis &amp; mechanistic interpretability</div>
+        <div class="person-card__links">
+          <a href="#" class="person-card__link">Scholar</a>
+          <a href="#" class="person-card__link">LinkedIn</a>
+        </div>
+      </div>
+
+      <div class="person-card reveal reveal-delay-3">
+        <div class="person-card__avatar">WA</div>
+        <div class="person-card__name">Wasim</div>
+        <div class="person-card__role">Research, Elemental Labs</div>
+        <div class="person-card__focus">Observability infrastructure &amp; probing</div>
+        <div class="person-card__links">
+          <a href="#" class="person-card__link">Scholar</a>
+          <a href="#" class="person-card__link">LinkedIn</a>
+        </div>
+      </div>
+    </div>
+
+    <div class="reveal" style="padding: var(--s-6); background: var(--c-surface-alt); border-radius: var(--radius-md); border: 1px solid var(--c-border-light);">
+      <p style="font-size: var(--fs-sm); color: var(--c-text-secondary);"><strong>Collaborators &amp; Mentors:</strong> We're grateful to advisors and collaborators across NYU, USC, Mercity, and the broader AI safety community. <a href="#involved">Interested in joining?</a></p>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================
+     8. DEMOS & BENCHMARKS
+     ============================================================ -->
+<section class="section" id="demos">
+  <div class="container">
+    <p class="section-label reveal">Demos &amp; Benchmarks</p>
+    <h2 class="section-title reveal">Applied Workflows</h2>
+    <p class="demos__intro reveal">We provide ready-to-run workflows that apply World Model Lens to real world-model checkpoints, covering reinforcement learning, robotics, and scientific simulation.</p>
+
+    <div class="demos__group reveal">
+      <h3 class="demos__group-title">Reinforcement Learning</h3>
+      <div class="demos__list">
+        <div class="demo-card">
+          <h4 class="demo-card__title">DreamerV3 Belief Inspector</h4>
+          <p class="demo-card__desc">Inspect latent beliefs and surprise signals in a DreamerV3 agent trained on Atari environments.</p>
+          <p class="demo-card__illustrates">Illustrates: belief tracking, surprise detection, activation caching</p>
+          <div class="demo-card__links">
+            <a href="#" class="btn btn-ghost" style="font-size: var(--fs-xs);">GitHub</a>
+            <a href="#" class="btn btn-ghost" style="font-size: var(--fs-xs);">Colab</a>
+          </div>
+        </div>
+        <div class="demo-card">
+          <h4 class="demo-card__title">Causal Tracing in MuZero</h4>
+          <p class="demo-card__desc">Trace which components of a MuZero world model most influence planning rollouts in board games.</p>
+          <p class="demo-card__illustrates">Illustrates: causal tracing, circuit discovery, path patching</p>
+          <div class="demo-card__links">
+            <a href="#" class="btn btn-ghost" style="font-size: var(--fs-xs);">GitHub</a>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="demos__group reveal">
+      <h3 class="demos__group-title">Robotics / Autonomous Driving</h3>
+      <div class="demos__list">
+        <div class="demo-card">
+          <h4 class="demo-card__title">CARLA World Model Safety Audit</h4>
+          <p class="demo-card__desc">Run a safety audit on a world model trained in the CARLA autonomous driving simulator, flagging OOD scenarios and failure modes.</p>
+          <p class="demo-card__illustrates">Illustrates: safety auditing, OOD detection, robustness testing</p>
+          <div class="demo-card__links">
+            <a href="#" class="btn btn-ghost" style="font-size: var(--fs-xs);">GitHub</a>
+            <a href="#" class="btn btn-ghost" style="font-size: var(--fs-xs);">Video</a>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="demos__group reveal">
+      <h3 class="demos__group-title">Scientific Simulation</h3>
+      <div class="demos__list">
+        <div class="demo-card">
+          <h4 class="demo-card__title">Physics Prediction Probing</h4>
+          <p class="demo-card__desc">Probe a video prediction model's learned representations for physical concepts like gravity, friction, and collision dynamics.</p>
+          <p class="demo-card__illustrates">Illustrates: semantic probing, disentanglement metrics, representation analysis</p>
+          <div class="demo-card__links">
+            <a href="#" class="btn btn-ghost" style="font-size: var(--fs-xs);">GitHub</a>
+            <a href="#" class="btn btn-ghost" style="font-size: var(--fs-xs);">Colab</a>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================
+     9. GET INVOLVED
+     ============================================================ -->
+<section class="involved section" id="involved">
+  <div class="container">
+    <p class="section-label reveal">Get Involved</p>
+    <h2 class="section-title reveal">Collaborate With Us</h2>
+    <p class="section-subtitle reveal" style="margin-bottom: var(--s-10);">We're building in the open and welcome contributions from researchers, engineers, and students working on world models, AI safety, and interpretability.</p>
+
+    <div class="involved__grid">
+      <div class="involved__card reveal">
+        <div class="involved__card-icon">
+          <svg class="icon-lg" viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" stroke="currentColor" stroke-width="2" fill="none"/><circle cx="9" cy="7" r="4" stroke="currentColor" stroke-width="2" fill="none"/><path d="M23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75" stroke="currentColor" stroke-width="2" fill="none"/></svg>
+        </div>
+        <h3 class="involved__card-title">Research Collaboration</h3>
+        <p class="involved__card-desc">We partner with labs and companies working on world models, RL, robotics, and safety. We can integrate World Model Lens into existing pipelines or co-develop new analysis methods.</p>
+        <a href="mailto:contact@elemental-research-lab.org" class="btn btn-secondary" style="margin-top: var(--s-4);">Reach Out</a>
+      </div>
+
+      <div class="involved__card reveal reveal-delay-1">
+        <div class="involved__card-icon">
+          <svg class="icon-lg" viewBox="0 0 24 24"><path d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 0 0-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0 0 20 4.77 5.07 5.07 0 0 0 19.91 1S18.73.65 16 2.48a13.38 13.38 0 0 0-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 0 0 5 4.77a5.44 5.44 0 0 0-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 0 0 9 18.13V22" stroke="currentColor" stroke-width="2" fill="none"/></svg>
+        </div>
+        <h3 class="involved__card-title">Contribute to World Model Lens</h3>
+        <p class="involved__card-desc">World Model Lens is open source. There are many ways to contribute:</p>
+        <ul class="involved__card-list">
+          <li>New adapters and backends</li>
+          <li>New probes and metrics</li>
+          <li>New benchmarks and workflows</li>
+          <li>Documentation and tutorials</li>
+        </ul>
+      </div>
+
+      <div class="involved__card reveal reveal-delay-2">
+        <div class="involved__card-icon">
+          <svg class="icon-lg" viewBox="0 0 24 24"><path d="M22 10v6M2 10l10-5 10 5-10 5z" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/><path d="M6 12v5c0 1.66 2.69 3 6 3s6-1.34 6-3v-5" stroke="currentColor" stroke-width="2" fill="none"/></svg>
+        </div>
+        <h3 class="involved__card-title">Student Opportunities</h3>
+        <p class="involved__card-desc">We're always interested in hearing from strong students working on world models, interpretability, RL, and safety. If you're passionate about making AI systems more transparent and reliable, reach out.</p>
+        <a href="mailto:contact@elemental-research-lab.org" class="btn btn-secondary" style="margin-top: var(--s-4);">Contact Us</a>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================
+     10. RESOURCES
+     ============================================================ -->
+<section class="section" id="resources">
+  <div class="container">
+    <p class="section-label reveal">Resources</p>
+    <h2 class="section-title reveal">Documentation &amp; Tools</h2>
+    <p class="section-subtitle reveal" style="margin-bottom: var(--s-10);">Everything you need to get started with World Model Lens and the broader lab toolkit.</p>
+
+    <div class="resources__grid reveal">
+      <a href="https://github.com/elemental-research-lab/world-model-lens" class="resource-link" target="_blank" rel="noopener">
+        <div class="resource-link__icon">
+          <svg class="icon-lg" viewBox="0 0 24 24"><path d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 0 0-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0 0 20 4.77 5.07 5.07 0 0 0 19.91 1S18.73.65 16 2.48a13.38 13.38 0 0 0-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 0 0 5 4.77a5.44 5.44 0 0 0-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 0 0 9 18.13V22" stroke="currentColor" stroke-width="2" fill="none"/></svg>
+        </div>
+        <div>
+          <div class="resource-link__title">GitHub Repository</div>
+          <div class="resource-link__desc">Source code, issues, and contribution guide</div>
+        </div>
+      </a>
+      <a href="#" class="resource-link">
+        <div class="resource-link__icon">
+          <svg class="icon-lg" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" stroke="currentColor" stroke-width="2" fill="none"/><path d="M14 2v6h6M16 13H8M16 17H8M10 9H8" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round"/></svg>
+        </div>
+        <div>
+          <div class="resource-link__title">Documentation / API Reference</div>
+          <div class="resource-link__desc">Full API docs, guides, and tutorials</div>
+        </div>
+      </a>
+      <a href="#" class="resource-link">
+        <div class="resource-link__icon">
+          <svg class="icon-lg" viewBox="0 0 24 24"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z" stroke="currentColor" stroke-width="2" fill="none"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z" stroke="currentColor" stroke-width="2" fill="none"/></svg>
+        </div>
+        <div>
+          <div class="resource-link__title">Tutorials &amp; Notebooks</div>
+          <div class="resource-link__desc">Step-by-step guides and Colab notebooks</div>
+        </div>
+      </a>
+      <a href="#" class="resource-link">
+        <div class="resource-link__icon">
+          <svg class="icon-lg" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </div>
+        <div>
+          <div class="resource-link__title">Model Checkpoints</div>
+          <div class="resource-link__desc">Pre-trained world-model checkpoints for benchmarking</div>
+        </div>
+      </a>
+    </div>
+
+    <div class="quickstart reveal">
+      <h3 class="quickstart__title">Quick Start</h3>
+      <p class="quickstart__desc">Get World Model Lens running in under a minute.</p>
+      <div class="quickstart__code">
+<pre><span class="comment"># Install</span>
+<span class="keyword">pip install</span> <span class="string">world-model-lens</span>
+
+<span class="comment"># Load a model and run analysis</span>
+<span class="keyword">from</span> world_model_lens <span class="keyword">import</span> HookedWorldModel, BeliefAnalyzer
+
+model = HookedWorldModel.<span class="func">from_pretrained</span>(<span class="string">"dreamerv3-atari"</span>)
+analyzer = BeliefAnalyzer(model)
+
+<span class="comment"># Run belief tracking on a trajectory</span>
+results = analyzer.<span class="func">analyze</span>(trajectory, metrics=[<span class="string">"surprise"</span>, <span class="string">"entropy"</span>])
+results.<span class="func">plot</span>()</pre>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================
+     11. CONTACT / FOOTER
+     ============================================================ -->
+<section class="section" id="contact" style="padding-bottom: 0;">
+  <div class="container">
+    <div class="reveal" style="text-align: center; max-width: 480px; margin: 0 auto; padding-bottom: var(--s-16);">
+      <p class="section-label">Contact</p>
+      <h2 class="section-title" style="text-align: center;">Get in Touch</h2>
+      <p style="color: var(--c-text-secondary); margin-bottom: var(--s-6);">
+        For research collaborations, questions about World Model Lens, or general inquiries, reach out to us directly.
+      </p>
+      <a href="mailto:contact@elemental-research-lab.org" class="btn btn-primary">
+        <svg class="icon-sm" viewBox="0 0 24 24"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z" stroke="currentColor" stroke-width="2" fill="none"/><path d="M22 6l-10 7L2 6" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        contact@elemental-research-lab.org
+      </a>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<footer class="footer">
+  <div class="container">
+    <div class="footer__inner">
+      <div class="footer__brand">
+        <div class="footer__logo" style="display: flex; align-items: center; gap: 10px;">
+          <svg width="24" height="24" viewBox="0 0 512 512" fill="none" aria-hidden="true">
+            <circle cx="256" cy="256" r="180" stroke="#fff" stroke-width="50" stroke-linecap="round" fill="none" opacity="0.7"/>
+            <line x1="98" y1="414" x2="414" y2="98" stroke="#fff" stroke-width="50" stroke-linecap="round" opacity="0.7"/>
+          </svg>
+          Elemental Research Lab
+        </div>
+        <p class="footer__tagline">Interpretability and safety for world-model-based AI systems. Building open tools, methods, and benchmarks for the research community.</p>
+      </div>
+
+      <div>
+        <div class="footer__heading">Navigate</div>
+        <ul class="footer__list">
+          <li><a href="#lab">Lab</a></li>
+          <li><a href="#projects">Projects</a></li>
+          <li><a href="#wml">World Model Lens</a></li>
+          <li><a href="#dashboards">Dashboards</a></li>
+          <li><a href="#research">Research</a></li>
+        </ul>
+      </div>
+
+      <div>
+        <div class="footer__heading">Community</div>
+        <ul class="footer__list">
+          <li><a href="#people">People</a></li>
+          <li><a href="#demos">Demos</a></li>
+          <li><a href="#involved">Get Involved</a></li>
+          <li><a href="#resources">Resources</a></li>
+          <li><a href="#contact">Contact</a></li>
+        </ul>
+      </div>
+
+      <div>
+        <div class="footer__heading">Links</div>
+        <ul class="footer__list">
+          <li><a href="https://github.com/elemental-research-lab" target="_blank" rel="noopener">GitHub</a></li>
+          <li><a href="https://x.com/elemental_lab" target="_blank" rel="noopener">X / Twitter</a></li>
+          <li><a href="mailto:contact@elemental-research-lab.org">Email</a></li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="footer__bottom">
+      <span class="footer__copy">&copy; 2026 Elemental Research Lab. All rights reserved.</span>
+      <span class="footer__credits">Supported by Manifund &amp; collaborating institutions.</span>
+    </div>
+  </div>
+</footer>
+
+<!-- ============================================================
+     JAVASCRIPT
+     ============================================================ -->
+<script>
+(function() {
+  'use strict';
+
+  // ── Scroll reveal ──
+  const revealEls = document.querySelectorAll('.reveal');
+  const revealObserver = new IntersectionObserver((entries) => {
+    entries.forEach(entry => {
+      if (entry.isIntersecting) {
+        entry.target.classList.add('is-visible');
+        revealObserver.unobserve(entry.target);
+      }
+    });
+  }, { threshold: 0.1, rootMargin: '0px 0px -40px 0px' });
+  revealEls.forEach(el => revealObserver.observe(el));
+
+  // ── Nav scroll state ──
+  const nav = document.getElementById('nav');
+  const navLinks = document.querySelectorAll('.nav__link');
+  const sections = document.querySelectorAll('section[id]');
+
+  function updateNav() {
+    if (window.scrollY > 10) {
+      nav.classList.add('is-scrolled');
+    } else {
+      nav.classList.remove('is-scrolled');
+    }
+
+    // Active section
+    let current = '';
+    sections.forEach(section => {
+      const top = section.offsetTop - 100;
+      if (window.scrollY >= top) {
+        current = section.getAttribute('id');
+      }
+    });
+    navLinks.forEach(link => {
+      link.classList.remove('is-active');
+      if (link.getAttribute('href') === '#' + current) {
+        link.classList.add('is-active');
+      }
+    });
+  }
+  window.addEventListener('scroll', updateNav, { passive: true });
+  updateNav();
+
+  // ── Mobile nav ──
+  const toggle = document.getElementById('navToggle');
+  const mobile = document.getElementById('navMobile');
+  toggle.addEventListener('click', () => {
+    const open = mobile.classList.toggle('is-open');
+    toggle.classList.toggle('is-open');
+    toggle.setAttribute('aria-expanded', open);
+    document.body.style.overflow = open ? 'hidden' : '';
+  });
+  document.querySelectorAll('[data-nav-close]').forEach(link => {
+    link.addEventListener('click', () => {
+      mobile.classList.remove('is-open');
+      toggle.classList.remove('is-open');
+      toggle.setAttribute('aria-expanded', 'false');
+      document.body.style.overflow = '';
+    });
+  });
+
+  // ── Animated counters ──
+  function animateCounter(el, target, duration) {
+    const start = performance.now();
+    const suffix = el.dataset.counterSuffix || '';
+    function tick(now) {
+      const elapsed = now - start;
+      const progress = Math.min(elapsed / duration, 1);
+      const eased = 1 - Math.pow(1 - progress, 3);
+      el.textContent = Math.round(eased * target).toLocaleString() + suffix;
+      if (progress < 1) requestAnimationFrame(tick);
+    }
+    requestAnimationFrame(tick);
+  }
+
+  // Lab metrics
+  document.querySelectorAll('[data-counter]').forEach(el => {
+    const obs = new IntersectionObserver((entries) => {
+      entries.forEach(entry => {
+        if (entry.isIntersecting) {
+          animateCounter(el, parseInt(el.dataset.counter), 1200);
+          obs.unobserve(el);
+        }
+      });
+    }, { threshold: 0.5 });
+    obs.observe(el);
+  });
+
+  // Dashboard metrics
+  document.querySelectorAll('[data-counter-dash]').forEach(el => {
+    const obs = new IntersectionObserver((entries) => {
+      entries.forEach(entry => {
+        if (entry.isIntersecting) {
+          animateCounter(el, parseInt(el.dataset.counterDash), 1500);
+          obs.unobserve(el);
+        }
+      });
+    }, { threshold: 0.3 });
+    obs.observe(el);
+  });
+
+  // ── Dashboard bar animation ──
+  const envBars = document.getElementById('envBars');
+  if (envBars) {
+    const barObs = new IntersectionObserver((entries) => {
+      entries.forEach(entry => {
+        if (entry.isIntersecting) {
+          envBars.querySelectorAll('[data-bar-h]').forEach(bar => {
+            setTimeout(() => {
+              bar.style.height = bar.dataset.barH + 'px';
+            }, 200);
+          });
+          barObs.unobserve(envBars);
+        }
+      });
+    }, { threshold: 0.3 });
+    barObs.observe(envBars);
+  }
+
+  // ── Dashboard time range toggle ──
+  document.querySelectorAll('.dash__time-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.dash__time-btn').forEach(b => b.classList.remove('is-active'));
+      btn.classList.add('is-active');
+    });
+  });
+
+  // ── Filter chips ──
+  document.querySelectorAll('.filter-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('is-active'));
+      btn.classList.add('is-active');
+      const filter = btn.dataset.filter;
+      document.querySelectorAll('.project-card').forEach(card => {
+        if (filter === 'all' || (card.dataset.tags && card.dataset.tags.includes(filter))) {
+          card.style.display = '';
+        } else {
+          card.style.display = 'none';
+        }
+      });
+    });
+  });
+
+  // ── Canvas: Hero abstract visualization ──
+  const heroCanvas = document.getElementById('heroCanvas');
+  if (heroCanvas) {
+    const ctx = heroCanvas.getContext('2d');
+    let w, h, nodes = [], edges = [];
+    const dpr = window.devicePixelRatio || 1;
+
+    function initHero() {
+      const rect = heroCanvas.parentElement.getBoundingClientRect();
+      w = rect.width;
+      h = rect.height;
+      heroCanvas.width = w * dpr;
+      heroCanvas.height = h * dpr;
+      heroCanvas.style.width = w + 'px';
+      heroCanvas.style.height = h + 'px';
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+      // Create nodes
+      nodes = [];
+      const count = Math.max(12, Math.floor(w * h / 8000));
+      const cx = w / 2, cy = h / 2;
+      for (let i = 0; i < count; i++) {
+        const angle = (Math.PI * 2 * i) / count + (Math.random() - 0.5) * 0.5;
+        const radius = 60 + Math.random() * (Math.min(w, h) * 0.35);
+        nodes.push({
+          x: cx + Math.cos(angle) * radius,
+          y: cy + Math.sin(angle) * radius,
+          r: 3 + Math.random() * 4,
+          phase: Math.random() * Math.PI * 2,
+          speed: 0.3 + Math.random() * 0.7,
+          ox: cx + Math.cos(angle) * radius,
+          oy: cy + Math.sin(angle) * radius
+        });
+      }
+      // Central node
+      nodes.push({ x: cx, y: cy, r: 7, phase: 0, speed: 0.2, ox: cx, oy: cy });
+
+      // Create edges
+      edges = [];
+      for (let i = 0; i < nodes.length; i++) {
+        for (let j = i + 1; j < nodes.length; j++) {
+          const dx = nodes[i].ox - nodes[j].ox;
+          const dy = nodes[i].oy - nodes[j].oy;
+          const dist = Math.sqrt(dx * dx + dy * dy);
+          if (dist < Math.min(w, h) * 0.4) {
+            edges.push([i, j, dist]);
+          }
+        }
+      }
+    }
+
+    let time = 0;
+    function drawHero() {
+      time += 0.008;
+      ctx.clearRect(0, 0, w, h);
+
+      // Animate nodes
+      nodes.forEach(n => {
+        n.x = n.ox + Math.sin(time * n.speed + n.phase) * 6;
+        n.y = n.oy + Math.cos(time * n.speed * 0.7 + n.phase) * 6;
+      });
+
+      // Draw edges
+      edges.forEach(([i, j, dist]) => {
+        const a = nodes[i], b = nodes[j];
+        const maxDist = Math.min(w, h) * 0.4;
+        const alpha = Math.max(0, 1 - dist / maxDist) * 0.15;
+        ctx.beginPath();
+        ctx.moveTo(a.x, a.y);
+        ctx.lineTo(b.x, b.y);
+        ctx.strokeStyle = `rgba(15, 0, 191, ${alpha})`;
+        ctx.lineWidth = 1;
+        ctx.stroke();
+      });
+
+      // Draw nodes
+      nodes.forEach((n, i) => {
+        ctx.beginPath();
+        ctx.arc(n.x, n.y, n.r, 0, Math.PI * 2);
+        ctx.fillStyle = `rgba(15, 0, 191, ${0.25 + Math.sin(time + n.phase) * 0.15})`;
+        ctx.fill();
+      });
+
+      requestAnimationFrame(drawHero);
+    }
+
+    initHero();
+    drawHero();
+    window.addEventListener('resize', initHero);
+  }
+
+  // ── Canvas: Sparklines ──
+  function drawSparkline(canvasId, data, color) {
+    const canvas = document.getElementById(canvasId);
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    const dpr = window.devicePixelRatio || 1;
+    const rect = canvas.parentElement.getBoundingClientRect();
+    const w = rect.width;
+    const h = 60;
+    canvas.width = w * dpr;
+    canvas.height = h * dpr;
+    canvas.style.width = w + 'px';
+    canvas.style.height = h + 'px';
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+    const max = Math.max(...data);
+    const min = Math.min(...data);
+    const range = max - min || 1;
+    const padding = 4;
+
+    // Draw gradient fill
+    const gradient = ctx.createLinearGradient(0, 0, 0, h);
+    gradient.addColorStop(0, color + '20');
+    gradient.addColorStop(1, color + '00');
+
+    ctx.beginPath();
+    ctx.moveTo(0, h);
+    data.forEach((v, i) => {
+      const x = (i / (data.length - 1)) * w;
+      const y = padding + (1 - (v - min) / range) * (h - padding * 2);
+      if (i === 0) ctx.lineTo(x, y);
+      else ctx.lineTo(x, y);
+    });
+    ctx.lineTo(w, h);
+    ctx.closePath();
+    ctx.fillStyle = gradient;
+    ctx.fill();
+
+    // Draw line
+    ctx.beginPath();
+    data.forEach((v, i) => {
+      const x = (i / (data.length - 1)) * w;
+      const y = padding + (1 - (v - min) / range) * (h - padding * 2);
+      if (i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    });
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 2;
+    ctx.lineJoin = 'round';
+    ctx.stroke();
+
+    // End dot
+    const lastX = w;
+    const lastY = padding + (1 - (data[data.length - 1] - min) / range) * (h - padding * 2);
+    ctx.beginPath();
+    ctx.arc(lastX, lastY, 3, 0, Math.PI * 2);
+    ctx.fillStyle = color;
+    ctx.fill();
+  }
+
+  // Draw sparklines when dashboard is visible
+  const dashSection = document.getElementById('dashboards');
+  if (dashSection) {
+    const sparkObs = new IntersectionObserver((entries) => {
+      entries.forEach(entry => {
+        if (entry.isIntersecting) {
+          drawSparkline('sparkModels', [18, 22, 19, 28, 31, 35, 32, 38, 42, 39, 44, 47], '#22C55E');
+          drawSparkline('sparkRuns', [420, 480, 510, 620, 590, 680, 720, 810, 890, 950, 1100, 1284], '#3B82C4');
+          drawSafetyChart();
+          sparkObs.unobserve(dashSection);
+        }
+      });
+    }, { threshold: 0.1 });
+    sparkObs.observe(dashSection);
+  }
+
+  // ── Safety area chart ──
+  function drawSafetyChart() {
+    const canvas = document.getElementById('safetyChart');
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    const dpr = window.devicePixelRatio || 1;
+    const rect = canvas.parentElement.getBoundingClientRect();
+    const w = rect.width;
+    const h = 200;
+    canvas.width = w * dpr;
+    canvas.height = h * dpr;
+    canvas.style.width = w + 'px';
+    canvas.style.height = h + 'px';
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+    const datasets = [
+      { data: [12, 18, 22, 28, 35, 42, 48, 55, 62, 70, 78, 89], color: '#3B82C4', label: 'OOD Tests' },
+      { data: [20, 28, 35, 42, 55, 68, 82, 110, 145, 190, 250, 312], color: '#0F00BF', label: 'Safety Audits' }
+    ];
+
+    const allValues = datasets.flatMap(d => d.data);
+    const max = Math.max(...allValues) * 1.1;
+    const padding = { top: 20, bottom: 30, left: 10, right: 10 };
+    const cw = w - padding.left - padding.right;
+    const ch = h - padding.top - padding.bottom;
+    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+    // Grid lines
+    for (let i = 0; i <= 4; i++) {
+      const y = padding.top + (ch / 4) * i;
+      ctx.beginPath();
+      ctx.moveTo(padding.left, y);
+      ctx.lineTo(w - padding.right, y);
+      ctx.strokeStyle = 'rgba(255,255,255,0.06)';
+      ctx.lineWidth = 1;
+      ctx.stroke();
+    }
+
+    // Month labels
+    ctx.font = '10px Inter, sans-serif';
+    ctx.fillStyle = 'rgba(255,255,255,0.25)';
+    ctx.textAlign = 'center';
+    months.forEach((m, i) => {
+      const x = padding.left + (i / 11) * cw;
+      ctx.fillText(m, x, h - 8);
+    });
+
+    // Draw datasets
+    datasets.forEach(ds => {
+      // Fill
+      const gradient = ctx.createLinearGradient(0, padding.top, 0, h - padding.bottom);
+      gradient.addColorStop(0, ds.color + '25');
+      gradient.addColorStop(1, ds.color + '00');
+      ctx.beginPath();
+      ctx.moveTo(padding.left, h - padding.bottom);
+      ds.data.forEach((v, i) => {
+        const x = padding.left + (i / 11) * cw;
+        const y = padding.top + ch - (v / max) * ch;
+        ctx.lineTo(x, y);
+      });
+      ctx.lineTo(padding.left + cw, h - padding.bottom);
+      ctx.closePath();
+      ctx.fillStyle = gradient;
+      ctx.fill();
+
+      // Line
+      ctx.beginPath();
+      ds.data.forEach((v, i) => {
+        const x = padding.left + (i / 11) * cw;
+        const y = padding.top + ch - (v / max) * ch;
+        if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      });
+      ctx.strokeStyle = ds.color;
+      ctx.lineWidth = 2;
+      ctx.lineJoin = 'round';
+      ctx.stroke();
+    });
+
+    // Legend
+    let lx = padding.left;
+    datasets.forEach(ds => {
+      ctx.fillStyle = ds.color;
+      ctx.fillRect(lx, 4, 12, 3);
+      ctx.fillStyle = 'rgba(255,255,255,0.5)';
+      ctx.font = '10px Inter, sans-serif';
+      ctx.textAlign = 'left';
+      ctx.fillText(ds.label, lx + 16, 8);
+      lx += ctx.measureText(ds.label).width + 36;
+    });
+  }
+
+  // Redraw on resize
+  window.addEventListener('resize', () => {
+    drawSparkline('sparkModels', [18, 22, 19, 28, 31, 35, 32, 38, 42, 39, 44, 47], '#22C55E');
+    drawSparkline('sparkRuns', [420, 480, 510, 620, 590, 680, 720, 810, 890, 950, 1100, 1284], '#3B82C4');
+    drawSafetyChart();
+  });
+
+})();
+</script>
+
+</body>
+</html>

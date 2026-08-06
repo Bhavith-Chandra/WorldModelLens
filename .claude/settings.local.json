@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(grep -E \"\\\\.\\(rst|md|txt\\)$\")",
+      "Bash(ls -la */examples/)"
+    ]
+  }
+}
