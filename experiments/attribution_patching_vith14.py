@@ -1224,6 +1224,12 @@ def summarise(
                 "L_corrupt": p.L_corrupt,
                 "ap_seconds": p.ap_seconds,
                 "true_scores": p.true_scores,
+                # estimates restricted to the validated sites, so the fidelity
+                # scatter can be redrawn without re-running the sweep
+                "ap_scores_validated": {
+                    est: {s: p.ap_scores[est][s] for s in p.true_scores}
+                    for est in p.ap_scores
+                } if p.true_scores else {},
             }
             for p in pair_results
         ],
@@ -1326,19 +1332,25 @@ def make_plots(
     os.makedirs(outdir, exist_ok=True)
     estimators = list(res["attribution_patching"])
     primary = estimators[-1]
+    # The validation in this experiment shows the two estimators are faithful on
+    # different site families, so each plot uses the one that applies: plain "ap"
+    # for individual heads (small perturbations), the path-averaged estimator for
+    # block outputs and the residual stream (large ones).
+    head_est = "ap" if "ap" in estimators else primary
     fr = res["attribution_patching"][primary]["fraction_of_gap"]
+    frh = res["attribution_patching"][head_est]["fraction_of_gap"]
     arch = res["architecture"]
     L, H = arch["depth"], arch["num_heads"]
 
     # -- 1. encoder head heatmap ------------------------------------------
-    grid = np.array([[fr.get(f"enc.head.{l}.{h}", 0.0) for h in range(H)] for l in range(L)])
+    grid = np.array([[frh.get(f"enc.head.{l}.{h}", 0.0) for h in range(H)] for l in range(L)])
     vmax = float(np.abs(grid).max()) or 1.0
     fig, ax = plt.subplots(figsize=(7, 9))
     im = ax.imshow(grid, cmap="RdBu_r", vmin=-vmax, vmax=vmax, aspect="auto")
     ax.set_xlabel("head")
     ax.set_ylabel("encoder layer")
     ax.set_title("I-JEPA ViT-H/14: per-head causal effect on prediction\n"
-                 f"attribution patching ({primary}), fraction of clean-corrupt gap")
+                 f"attribution patching ({head_est}), fraction of clean-corrupt gap")
     fig.colorbar(im, ax=ax, shrink=0.7)
     fig.tight_layout()
     fig.savefig(os.path.join(outdir, "ap_vith14_head_heatmap.png"), dpi=140)
@@ -1354,10 +1366,10 @@ def make_plots(
     axes[0].set_title(f"Attribution patching by encoder layer, ViT-H/14 ({primary})")
     axes[0].legend()
     axes[1].bar(range(L),
-                [sum(abs(fr.get(f"enc.head.{l}.{h}", 0.0)) for h in range(H)) for l in range(L)])
+                [sum(abs(frh.get(f"enc.head.{l}.{h}", 0.0)) for h in range(H)) for l in range(L)])
     axes[1].set_xlabel("encoder layer")
     axes[1].set_ylabel("sum |head effect|")
-    axes[1].set_title("Total per-head attribution mass per layer")
+    axes[1].set_title(f"Total per-head attribution mass per layer ({head_est})")
     fig.tight_layout()
     fig.savefig(os.path.join(outdir, "ap_vith14_layer_profile.png"), dpi=140)
     plt.close(fig)

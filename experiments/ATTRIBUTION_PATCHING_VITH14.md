@@ -16,7 +16,9 @@ python experiments/attribution_patching_vith14.py \
 ```
 
 Raw numbers: [`results_attribution_patching_vith14.json`](results_attribution_patching_vith14.json).
-Plots: [`plots/`](plots/).
+Plots: [`plots/`](plots/) — the head plots use plain `ap` and the block/residual plots use
+`ap_ig8`, for the reason established in §4. The run is seeded; re-running it reproduced
+every fidelity figure below to three decimal places.
 
 ---
 
