@@ -145,3 +145,6 @@ outputs/
 *.pkl
 *.parquet
 *.pth.tar
+
+# Downloaded / derived model checkpoints
+checkpoints/
