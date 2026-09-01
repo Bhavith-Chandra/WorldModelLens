@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 """Out-of-Distribution (OOD) detection for world model latent spaces.
 
 This module provides multiple OOD detection methods:
