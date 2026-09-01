@@ -284,7 +284,11 @@ class ForwardRunner:
             for i, block in enumerate(adapter.predictor.blocks):
                 x = block(x)
                 if manager is not None:
-                    manager.apply_and_cache(f"predictor.layer_{i}", 0, x, ctx, cache, names_filter)
+                    # The returned tensor may have been changed by a HookPoint.
+                    # Propagate it so activation patching affects downstream layers.
+                    x = manager.apply_and_cache(
+                        f"predictor.layer_{i}", 0, x, ctx, cache, names_filter
+                    )
 
             x = adapter.predictor.norm(x)
 
