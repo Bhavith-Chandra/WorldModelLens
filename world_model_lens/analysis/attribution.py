@@ -110,6 +110,8 @@ class BaseAttribution(ABC):
     @torch.no_grad()
     def _get_target_gt(self, img_tensor: torch.Tensor, target_id: int) -> torch.Tensor:
         """Get ground truth target embedding from the target encoder."""
+        device = next(self.adapter.parameters()).device
+        img_tensor = img_tensor.to(device)
         target_reps = self.adapter.target_encoder(img_tensor)
         return target_reps[:, [target_id], :]
 
@@ -303,6 +305,8 @@ def extract_attention_weights(
         head_idx: If int, extract that head. If None, average across heads.
                   If "all", return all heads as [n_heads, n_ctx].
     """
+    device = next(wm.adapter.parameters()).device
+    img_tensor = img_tensor.to(device)
     wm.adapter.last_context_ids = context_ids
     wm.adapter.last_target_ids = [target_id]
     
