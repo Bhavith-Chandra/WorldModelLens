@@ -157,6 +157,8 @@ jobs:
         with:
           source-dir: docs/_build/html
           preview-branch: gh-pages
+
+  build-wheel:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

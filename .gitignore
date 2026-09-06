@@ -145,3 +145,8 @@ outputs/
 *.pkl
 *.parquet
 *.pth.tar
+
+# Task 8 generated smoke data and evaluator outputs
+/data/task8_*/
+/data/torchvision/
+/experiments/pvl/reports/task8_*/

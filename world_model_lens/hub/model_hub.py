@@ -539,6 +539,25 @@ class ModelHub:
         target_state = cls._strip_module_prefix(target_state or {})
         predictor_state = cls._strip_module_prefix(predictor_state)
 
+        # The official I-JEPA predictor uses descriptive module names while
+        # the adapter exposes the same modules under concise runtime names.
+        # Translate the checkpoint keys before strict loading; this is not a
+        # best-effort compatibility path because Task 8 needs every pretrained
+        # encoder and predictor parameter to be present.
+        predictor_key_map = (
+            ("predictor_pos_embed", "pos_embed"),
+            ("predictor_blocks.", "blocks."),
+            ("predictor_norm.", "norm."),
+            ("predictor_proj.", "predictor_project_back."),
+        )
+        predictor_state = {
+            next(
+                (target + key[len(source) :] for source, target in predictor_key_map if key.startswith(source)),
+                key,
+            ): value
+            for key, value in predictor_state.items()
+        }
+
         patch_weight = encoder_state.get("patch_embed.proj.weight")
         if not isinstance(patch_weight, torch.Tensor):
             raise RuntimeError(
@@ -592,32 +611,17 @@ class ModelHub:
         )
 
         adapter = IJEPAAdapter(cfg)
-        encoder_missing, encoder_unexpected = adapter.context_encoder.load_state_dict(
-            encoder_state, strict=False
-        )
-        target_missing, target_unexpected = adapter.target_encoder.load_state_dict(
-            target_state, strict=False
-        )
-        predictor_missing, predictor_unexpected = adapter.predictor.load_state_dict(
-            predictor_state, strict=False
-        )
+        try:
+            adapter.context_encoder.load_state_dict(encoder_state, strict=True)
+            adapter.target_encoder.load_state_dict(target_state, strict=True)
+            adapter.predictor.load_state_dict(predictor_state, strict=True)
+        except RuntimeError as exc:
+            raise RuntimeError(
+                "Official I-JEPA checkpoint did not load exactly. Refusing to run an "
+                "evaluation with randomly initialized components."
+            ) from exc
 
-        if (
-            encoder_missing
-            or encoder_unexpected
-            or target_missing
-            or target_unexpected
-            or predictor_missing
-            or predictor_unexpected
-        ):
-            warnings.warn(
-                "I-JEPA checkpoint loaded with partial key mismatches; "
-                "the adapter is usable but some weights were not matched exactly.",
-                UserWarning,
-                stacklevel=2,
-            )
-
-        adapter = adapter.to(torch.device(device))
+        adapter = adapter.to(device=torch.device(device))
         adapter.eval()
         return adapter
 

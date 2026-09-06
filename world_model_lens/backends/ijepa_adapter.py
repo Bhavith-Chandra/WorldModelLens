@@ -38,7 +38,7 @@ class PatchEmbed(nn.Module):
 
 
 class Attention(nn.Module):
-    def __init__(self, dim, num_heads=8, qkv_bias=False, attn_drop=0.0, proj_drop=0.0):
+    def __init__(self, dim, num_heads=8, qkv_bias=True, attn_drop=0.0, proj_drop=0.0):
         super().__init__()
         self.num_heads = num_heads
         head_dim = dim // num_heads
@@ -87,21 +87,35 @@ class Attention(nn.Module):
         return x
 
 
-class Block(nn.Module):
-    def __init__(self, dim, num_heads, mlp_ratio=4.0, qkv_bias=False, drop=0.0, attn_drop=0.0):
+class Mlp(nn.Module):
+    """Official I-JEPA-compatible MLP naming and parameter layout."""
+
+    def __init__(self, dim, hidden_dim, drop=0.0):
         super().__init__()
-        self.norm1 = nn.LayerNorm(dim)
+        self.fc1 = nn.Linear(dim, hidden_dim)
+        self.act = nn.GELU()
+        self.fc2 = nn.Linear(hidden_dim, dim)
+        self.drop = nn.Dropout(drop)
+
+    def forward(self, x):
+        x = self.fc1(x)
+        x = self.act(x)
+        x = self.drop(x)
+        x = self.fc2(x)
+        return self.drop(x)
+
+
+class Block(nn.Module):
+    def __init__(self, dim, num_heads, mlp_ratio=4.0, qkv_bias=True, drop=0.0, attn_drop=0.0):
+        super().__init__()
+        # Meta's official I-JEPA ViTs use LayerNorm(eps=1e-6) and qkv biases.
+        self.norm1 = nn.LayerNorm(dim, eps=1e-6)
         self.attn = Attention(
             dim, num_heads=num_heads, qkv_bias=qkv_bias, attn_drop=attn_drop, proj_drop=drop
         )
-        self.norm2 = nn.LayerNorm(dim)
+        self.norm2 = nn.LayerNorm(dim, eps=1e-6)
         mlp_hidden_dim = int(dim * mlp_ratio)
-        self.mlp = nn.Sequential(
-            nn.Linear(dim, mlp_hidden_dim),
-            nn.GELU(),
-            nn.Linear(mlp_hidden_dim, dim),
-            nn.Dropout(drop),
-        )
+        self.mlp = Mlp(dim, mlp_hidden_dim, drop=drop)
 
         self.hook_resid_mid = nn.Identity()
         self.hook_mlp_in = nn.Identity()
@@ -137,7 +151,7 @@ class VisionTransformer(nn.Module):
         self.blocks = nn.ModuleList(
             [Block(dim=embed_dim, num_heads=num_heads) for _ in range(depth)]
         )
-        self.norm = nn.LayerNorm(embed_dim)
+        self.norm = nn.LayerNorm(embed_dim, eps=1e-6)
 
         self.hook_resid_pre = nn.Identity()
 
@@ -224,9 +238,9 @@ class IJEPAPredictor(HookedRootModule):
         self.pos_embed = nn.Parameter(torch.zeros(1, num_patches, predictor_embed_dim))
 
         self.blocks: nn.ModuleList = nn.ModuleList(
-            [Block(dim=predictor_embed_dim, num_heads=num_heads) for _ in range(depth)]
+            [Block(dim=predictor_embed_dim, num_heads=num_heads, qkv_bias=True) for _ in range(depth)]
         )
-        self.norm = nn.LayerNorm(predictor_embed_dim)
+        self.norm = nn.LayerNorm(predictor_embed_dim, eps=1e-6)
 
         self.hook_resid_pre = nn.Identity()
 

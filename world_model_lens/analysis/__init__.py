@@ -14,6 +14,11 @@ from world_model_lens.analysis.attribution import (
     AttributionEvaluator,
     extract_attention_weights,
 )
+from world_model_lens.analysis.ema_structure import (
+    EMAStructureAnalyzer,
+    EMAStructureDivergenceResult,
+    InpaintingCandidateScore,
+)
 
 __all__ = [
     "BeliefAnalyzer",
@@ -26,4 +31,7 @@ __all__ = [
     "SmoothGradAttribution",
     "AttributionEvaluator",
     "extract_attention_weights",
+    "EMAStructureAnalyzer",
+    "EMAStructureDivergenceResult",
+    "InpaintingCandidateScore",
 ]
