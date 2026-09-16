@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import random
 from datetime import datetime, timezone
 from pathlib import Path
@@ -45,20 +46,29 @@ import numpy as np
 import torch
 import yaml
 
-
 # ---------------------------------------------------------------------------
 # Edit experiment arguments here. Every value is copied to config.yaml.
 # ---------------------------------------------------------------------------
+
+WORKSPACE_ROOT = Path(__file__).resolve().parents[2]
+TASK_ROOT = Path(__file__).resolve().parents[1]
 
 CONFIG: dict[str, Any] = {
     # Use CHECKPOINT_PATH when the Meta checkpoint already exists locally.
     # Otherwise ModelHub downloads/loads MODEL_NAME into CACHE_DIR.
     "MODEL_NAME": "ijepa-vit-h-in1k",
-    "CHECKPOINT_PATH": None,
+    "CHECKPOINT_PATH": os.environ.get(
+        "WML_CHECKPOINT_PATH", str(WORKSPACE_ROOT / "checkpoints" / "vith14_in1k_ep300.pth.tar")
+    ),
     "CACHE_DIR": None,
     "FORCE_DOWNLOAD": False,
-    "IMAGENET_ROOT": "/content/imagenet/val",
-    "OUTPUT_ROOT": "outputs/ijepa_task4",
+    "IMAGENET_ROOT": os.environ.get(
+        "WML_IMAGENET_ROOT", str(WORKSPACE_ROOT / "datasets" / "imagenet" / "val")
+    ),
+    # Optional fixed manifest shared with other tasks. When supplied it takes
+    # precedence over sampling so the exact images and order are identical.
+    "DATASET_MANIFEST": os.environ.get("WML_DATASET_MANIFEST"),
+    "OUTPUT_ROOT": os.environ.get("WML_OUTPUT_ROOT", str(TASK_ROOT / "outputs" / "ijepa_task4")),
     "NUM_SAMPLES": 1000,
     # ImageNet has 1,000 classes. This pilot deliberately uses 50 classes so
     # 1,000 images give 20 examples per class, which is enough for stratified
@@ -70,7 +80,7 @@ CONFIG: dict[str, Any] = {
     "PRECISION": "fp16" if torch.cuda.is_available() else "fp32",
     # Number of images per batched forward pass. Raise until GPU memory is the
     # limit; this is the main runtime lever.
-    "BATCH_SIZE": 32,
+    "BATCH_SIZE": 96,
     # None (or "all") sweeps every predictor layer. The official ViT-H
     # predictor has 12 layers; the ijepa_mini fallback has 4.
     "TARGET_LAYERS": None,
@@ -79,7 +89,12 @@ CONFIG: dict[str, Any] = {
     # makes dataset means and cross-sample activations token-aligned.
     "TARGET_PATCH_SIDE": 4,
     "PROBE_TEST_SPLIT": 0.2,
-    "PROBE_USE_CV": True,
+    # CV sweeps 5 alphas x 5 folds x 2 fit passes (~31 fits) per probe; with 37
+    # probes that is over 1,000 sequential sklearn fits and can run for a very
+    # long time with no way to gauge progress. Off by default for the same
+    # reason the context-encoder variant disables it. Flip to True only if you
+    # specifically need the cross-validated alpha search and mean/std.
+    "PROBE_USE_CV": False,
     "PLOT_DPI": 180,
     "SHOW_PLOTS": True,
 }
@@ -90,7 +105,6 @@ from world_model_lens import LatentProber  # noqa: E402
 from world_model_lens.analysis.ood_detection import MahalanobisOODDetector  # noqa: E402
 from world_model_lens.data import load_imagenet_image, load_imagenet_subset  # noqa: E402
 from world_model_lens.hub.model_hub import ModelHub  # noqa: E402
-
 
 # Metric keys aggregated into per-(layer, mode) summaries and plotted.
 METRIC_KEYS = (
@@ -163,10 +177,8 @@ def load_world_model() -> Any:
     fused attention kernel enabled when requested.
     """
     checkpoint_path = CONFIG.get("CHECKPOINT_PATH")
-    if checkpoint_path:
-        adapter = ModelHub.load_checkpoint(
-            checkpoint_path, backend="ijepa", device=CONFIG["DEVICE"]
-        )
+    if checkpoint_path and Path(checkpoint_path).is_file():
+        adapter = ModelHub._load_ijepa(str(checkpoint_path), device=CONFIG["DEVICE"])
     else:
         adapter = ModelHub.load(
             CONFIG["MODEL_NAME"],
@@ -208,9 +220,7 @@ def build_fixed_masks(adapter: Any) -> tuple[list[int], list[int]]:
         raise ValueError("TARGET_PATCH_SIDE is invalid for the checkpoint patch grid")
     start = (grid - side) // 2
     target = {
-        row * grid + col
-        for row in range(start, start + side)
-        for col in range(start, start + side)
+        row * grid + col for row in range(start, start + side) for col in range(start, start + side)
     }
     context = [patch for patch in range(num_patches) if patch not in target]
     return context, sorted(target)
@@ -300,7 +310,9 @@ def forward_intervene(
             raise ValueError(f"mode '{mode}' requires a replacement activation")
         value = replacement.to(device=output.device, dtype=output.dtype)
         if value.shape != output.shape:
-            raise ValueError(f"Replacement {tuple(value.shape)} != activation {tuple(output.shape)}")
+            raise ValueError(
+                f"Replacement {tuple(value.shape)} != activation {tuple(output.shape)}"
+            )
         return value
 
     handle = adapter.predictor.blocks[layer].hook_resid_post.register_forward_hook(hook)
@@ -343,13 +355,9 @@ def prediction_metrics(
         "prediction_mse": float(mse),
         "prediction_mse_delta": float(mse - clean_mse),
         "prediction_mse_ratio": float(mse / clean_mse.clamp_min(1e-12)),
-        "target_cosine": float(
-            torch.nn.functional.cosine_similarity(pred, tgt, dim=0)
-        ),
+        "target_cosine": float(torch.nn.functional.cosine_similarity(pred, tgt, dim=0)),
         "prediction_shift_l2": float((pred - clean).norm()),
-        "clean_prediction_cosine": float(
-            torch.nn.functional.cosine_similarity(pred, clean, dim=0)
-        ),
+        "clean_prediction_cosine": float(torch.nn.functional.cosine_similarity(pred, clean, dim=0)),
         "substitution_maha": float(layer_detector.score(substitution_feature).item()),
         "prediction_maha": float(prediction_detector.score(prediction_feature).item()),
     }
@@ -423,6 +431,8 @@ def add_probe_results(
     """
     probe_results: dict[str, dict[str, Any]] = {}
     clean_result: dict[str, Any] | None = None
+    total = len(feature_sets)
+    trained = 0
     for (layer, mode), features in feature_sets.items():
         name = f"predictor.layer_{layer}.{mode}"
         if mode == "clean" and clean_result is not None:
@@ -431,6 +441,12 @@ def add_probe_results(
             probe_results[name] = train_library_probe(features, labels, name)
             if mode == "clean":
                 clean_result = dict(probe_results[name])
+        trained += 1
+        print(
+            f"  probe {trained}/{total}: {name} trained "
+            f"(test_acc={probe_results[name]['accuracy']:.3f})",
+            flush=True,
+        )
 
     for summary in summaries:
         key = f"predictor.layer_{summary['layer']}.{summary['mode']}"
@@ -443,6 +459,7 @@ def add_probe_results(
 # ---------------------------------------------------------------------------
 # Output
 # ---------------------------------------------------------------------------
+
 
 def plot_metric(
     summaries: list[dict[str, Any]],
@@ -480,25 +497,45 @@ def save_plots(run_dir: Path, summaries: list[dict[str, Any]], layers: list[int]
     all_modes = ["clean", *CONFIG["ABLATION_MODES"]]
     ablation_modes = list(CONFIG["ABLATION_MODES"])
     plot_metric(
-        summaries, layers, all_modes, "mean_prediction_mse",
-        "Prediction MSE", run_dir / "prediction_mse.png",
+        summaries,
+        layers,
+        all_modes,
+        "mean_prediction_mse",
+        "Prediction MSE",
+        run_dir / "prediction_mse.png",
     )
     plot_metric(
-        summaries, layers, all_modes, "mean_target_cosine",
-        "Target cosine", run_dir / "target_cosine.png",
+        summaries,
+        layers,
+        all_modes,
+        "mean_target_cosine",
+        "Target cosine",
+        run_dir / "target_cosine.png",
     )
     plot_metric(
-        summaries, layers, all_modes, "classification_accuracy",
-        "Linear-probe accuracy", run_dir / "classification_accuracy.png",
+        summaries,
+        layers,
+        all_modes,
+        "classification_accuracy",
+        "Linear-probe accuracy",
+        run_dir / "classification_accuracy.png",
     )
     # Mahalanobis metrics are undefined for the clean pass; plot ablations only.
     plot_metric(
-        summaries, layers, ablation_modes, "mean_substitution_maha",
-        "Substitution Mahalanobis (off-distribution)", run_dir / "substitution_maha.png",
+        summaries,
+        layers,
+        ablation_modes,
+        "mean_substitution_maha",
+        "Substitution Mahalanobis (off-distribution)",
+        run_dir / "substitution_maha.png",
     )
     plot_metric(
-        summaries, layers, ablation_modes, "mean_prediction_maha",
-        "Prediction Mahalanobis", run_dir / "prediction_maha.png",
+        summaries,
+        layers,
+        ablation_modes,
+        "mean_prediction_maha",
+        "Prediction Mahalanobis",
+        run_dir / "prediction_maha.png",
     )
 
 
@@ -509,7 +546,9 @@ def save_plots(run_dir: Path, summaries: list[dict[str, Any]], layers: list[int]
 
 def batched_indices(total: int, batch_size: int) -> list[list[int]]:
     """Split ``range(total)`` into contiguous index batches of ``batch_size``."""
-    return [list(range(start, min(start + batch_size, total))) for start in range(0, total, batch_size)]
+    return [
+        list(range(start, min(start + batch_size, total))) for start in range(0, total, batch_size)
+    ]
 
 
 def collect_clean(
@@ -538,16 +577,16 @@ def collect_clean(
         prediction_chunks.append(captured["prediction"].to("cpu", torch.float16))
         target_chunks.append(captured["target"].to("cpu", torch.float16))
         for layer in layers:
-            activation_chunks[layer].append(
-                captured["activations"][layer].to("cpu", torch.float16)
-            )
+            activation_chunks[layer].append(captured["activations"][layer].to("cpu", torch.float16))
         print(f"  clean pass: batch {batch_number}/{len(batches)}", flush=True)
 
     return {
         "context_latents": torch.cat(context_chunks, dim=0),
         "predictions": torch.cat(prediction_chunks, dim=0),
         "targets": torch.cat(target_chunks, dim=0),
-        "activations": {layer: torch.cat(chunks, dim=0) for layer, chunks in activation_chunks.items()},
+        "activations": {
+            layer: torch.cat(chunks, dim=0) for layer, chunks in activation_chunks.items()
+        },
     }
 
 
@@ -696,15 +735,21 @@ def main() -> None:
     seed_everything()
     run_dir = create_run_directory()
 
-    samples = load_imagenet_subset(
-        CONFIG["IMAGENET_ROOT"],
-        num_samples=int(CONFIG["NUM_SAMPLES"]),
-        num_classes=int(CONFIG["NUM_CLASSES"]),
-        seed=int(CONFIG["SEED"]),
-    )
-    (run_dir / "dataset_manifest.json").write_text(
-        json.dumps(samples, indent=2), encoding="utf-8"
-    )
+    if CONFIG["DATASET_MANIFEST"]:
+        manifest_path = Path(str(CONFIG["DATASET_MANIFEST"]))
+        if not manifest_path.is_file():
+            raise FileNotFoundError(f"Dataset manifest not found: {manifest_path}")
+        samples = json.loads(manifest_path.read_text(encoding="utf-8"))
+        if not isinstance(samples, list) or len(samples) != int(CONFIG["NUM_SAMPLES"]):
+            raise ValueError("Fixed manifest must contain exactly NUM_SAMPLES records.")
+    else:
+        samples = load_imagenet_subset(
+            CONFIG["IMAGENET_ROOT"],
+            num_samples=int(CONFIG["NUM_SAMPLES"]),
+            num_classes=int(CONFIG["NUM_CLASSES"]),
+            seed=int(CONFIG["SEED"]),
+        )
+    (run_dir / "dataset_manifest.json").write_text(json.dumps(samples, indent=2), encoding="utf-8")
 
     adapter = load_world_model()
 
@@ -722,9 +767,7 @@ def main() -> None:
         activations = clean["activations"][layer].float()
         layer_means[layer] = activations.mean(dim=0)
         layer_detectors[layer] = MahalanobisOODDetector().fit(activations.mean(dim=1))
-    prediction_detector = MahalanobisOODDetector().fit(
-        clean["predictions"].float().mean(dim=1)
-    )
+    prediction_detector = MahalanobisOODDetector().fit(clean["predictions"].float().mean(dim=1))
 
     # Pass 2: interventions.
     intervention_rows, feature_sets = run_interventions(
@@ -744,23 +787,27 @@ def main() -> None:
         feature_sets[(layer, "clean")] = clean_features
     rows = clean_rows + intervention_rows
 
+    # GPU work is done; the rest of the pipeline (probe training, aggregation,
+    # plotting) is CPU-only, so release the model and its cached CUDA memory
+    # instead of holding several GB of idle VRAM for the remainder of the run.
+    predictor_depth = len(adapter.predictor.blocks)
+    del adapter
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
     labels = [int(sample["label"]) for sample in samples]
     summaries = aggregate(rows)
     probe_results = add_probe_results(summaries, feature_sets, labels)
 
-    (run_dir / "summary_metrics.json").write_text(
-        json.dumps(summaries, indent=2), encoding="utf-8"
-    )
-    (run_dir / "per_sample_metrics.json").write_text(
-        json.dumps(rows, indent=2), encoding="utf-8"
-    )
+    (run_dir / "summary_metrics.json").write_text(json.dumps(summaries, indent=2), encoding="utf-8")
+    (run_dir / "per_sample_metrics.json").write_text(json.dumps(rows, indent=2), encoding="utf-8")
     save_plots(run_dir, summaries, layers)
 
     results = {
         "config": CONFIG,
         "model": {
             "name": CONFIG["MODEL_NAME"],
-            "predictor_depth": len(adapter.predictor.blocks),
+            "predictor_depth": predictor_depth,
             "layers": layers,
             "context_patches": context_ids,
             "target_patches": target_ids,
@@ -768,9 +815,7 @@ def main() -> None:
         "probe_results": probe_results,
         "summary": summaries,
     }
-    (run_dir / "results.json").write_text(
-        json.dumps(results, indent=2), encoding="utf-8"
-    )
+    (run_dir / "results.json").write_text(json.dumps(results, indent=2), encoding="utf-8")
     print(f"Saved Task 4 run to {run_dir.resolve()}", flush=True)
 
 

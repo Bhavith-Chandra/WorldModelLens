@@ -70,9 +70,12 @@ def download_file(url: str, target_path: str) -> None:
     response.raise_for_status()
     total_size = int(response.headers.get("content-length", 0))
 
-    with open(target_path, "wb") as f, tqdm(
-        total=total_size, unit="iB", unit_scale=True, unit_divisor=1024, desc="Downloading"
-    ) as bar:
+    with (
+        open(target_path, "wb") as f,
+        tqdm(
+            total=total_size, unit="iB", unit_scale=True, unit_divisor=1024, desc="Downloading"
+        ) as bar,
+    ):
         for chunk in response.iter_content(chunk_size=1024 * 64):
             size = f.write(chunk)
             bar.update(size)
@@ -113,7 +116,7 @@ def verify_checkpoint(path: str) -> bool:
     # Detect DDP prefix
     prefix = "module." if any(k.startswith("module.") for k in enc_keys) else ""
     if prefix:
-        print(f"  [OK]  DDP-wrapped encoder detected (keys start with 'module.'). ")
+        print("  [OK]  DDP-wrapped encoder detected (keys start with 'module.'). ")
 
     # embed_dim from patch_embed projection
     pe_key = f"{prefix}patch_embed.proj.weight"
@@ -124,28 +127,24 @@ def verify_checkpoint(path: str) -> bool:
     patch_size = enc[pe_key].shape[2]  # [embed_dim, in_chans, kH, kW]
 
     # depth from counting norm1 layers
-    depth = sum(1 for k in enc_keys if k.startswith(f"{prefix}blocks.") and k.endswith(".norm1.weight"))
-
-    # num_heads from qkv weight: shape [3 * num_heads * head_dim, embed_dim]
-    qkv_key = f"{prefix}blocks.0.attn.qkv.weight"
-    num_heads = enc[qkv_key].shape[0] // embed_dim // 3 * (embed_dim // 64)  # head_dim typically 64
-    # Simpler: qkv_out == 3 * embed_dim for ViT, so num_heads = embed_dim // head_dim
-    num_heads = EXPECTED_NUM_HEADS  # fixed for ViT-H
+    depth = sum(
+        1 for k in enc_keys if k.startswith(f"{prefix}blocks.") and k.endswith(".norm1.weight")
+    )
 
     # pos_embed patches
     pos_key = f"{prefix}pos_embed"
     pos_shape = enc.get(pos_key, None)
     n_patches = pos_shape.shape[1] if pos_shape is not None else "?"
 
-    print(f"  [OK]  embed_dim={embed_dim}  depth={depth}  patch_size={patch_size}  pos_embed patches={n_patches}")
-
-    ok = (
-        embed_dim == EXPECTED_EMBED_DIM
-        and depth == EXPECTED_DEPTH
-        and patch_size == 14
+    print(
+        f"  [OK]  embed_dim={embed_dim}  depth={depth}  patch_size={patch_size}  pos_embed patches={n_patches}"
     )
+
+    ok = embed_dim == EXPECTED_EMBED_DIM and depth == EXPECTED_DEPTH and patch_size == 14
     status = "✓ PASS" if ok else "✗ MISMATCH"
-    print(f"  [{status}]  Expected embed_dim={EXPECTED_EMBED_DIM}, depth={EXPECTED_DEPTH}, patch=14")
+    print(
+        f"  [{status}]  Expected embed_dim={EXPECTED_EMBED_DIM}, depth={EXPECTED_DEPTH}, patch=14"
+    )
     return ok
 
 
@@ -196,7 +195,7 @@ def main() -> None:
     dest_dir.mkdir(parents=True, exist_ok=True)
     target_path = str(dest_dir / info["filename"])
 
-    print(f"\nI-JEPA ViT-H Checkpoint Downloader")
+    print("\nI-JEPA ViT-H Checkpoint Downloader")
     print(f"  Variant    : {args.variant} — {info['description']}")
     print(f"  Destination: {target_path}")
     print()
@@ -217,8 +216,8 @@ def main() -> None:
     else:
         print()
         print("TIP: Run with --verify to validate the checkpoint structure.")
-        print(f"\nTo load in your code:")
-        print(f"    from world_model_lens.backends.ijepa_adapter import IJEPAAdapter")
+        print("\nTo load in your code:")
+        print("    from world_model_lens.backends.ijepa_adapter import IJEPAAdapter")
         print(f"    adapter = IJEPAAdapter.from_checkpoint('{target_path}')")
         print()
 
