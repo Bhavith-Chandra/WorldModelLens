@@ -1,335 +1,51 @@
 #!/usr/bin/env python3
-"""Task 7: I-JEPA prediction-error geometry under latent anisotropy.
+"""Task 7 mainline: calibrated predictor-error geometry and DINO neighbours.
 
-For each ImageNet image, this experiment subtracts the target-encoder patch
-embeddings from the corresponding predictor embeddings::
-
-    error[image, patch, dim] = prediction - target
-
-PCA is fitted to patch-level errors from a stratified calibration split. The
-held-out errors are then scored with ordinary MSE and precision-weighted
-Mahalanobis distance in the retained PCA subspace. Category rankings under the
-two metrics reveal whether conclusions based on isotropic MSE are sensitive to
-the directional geometry of I-JEPA's embedding space.
-
-Two Mahalanobis scores are reported:
-
-* ``mahalanobis_zero`` measures error relative to perfect prediction (zero).
-* ``mahalanobis_centered`` measures atypicality relative to the model's average
-  error, removing systematic prediction bias.
-
-Edit CONFIG below, then run this file. Every setting and result is written to a
-timestamped output directory.
+Only three raw scalar metrics are persisted per evaluation image:
+``predictor_mse``, ``predictor_error_mahalanobis_zero``, and
+``predictor_error_mahalanobis_centered``. Rankings and correlations are derived
+summaries. Component-level storage lives in the subspace entry point.
 """
 
 from __future__ import annotations
 
-import json
-import math
-import random
-from datetime import datetime, timezone
+import importlib.util
 from pathlib import Path
 from typing import Any
 
+import ijepa_task7_core as core
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
-import yaml
 
-from world_model_lens.data import load_imagenet_image, load_imagenet_subset
-from world_model_lens.hub.model_hub import ModelHub
-
-
-# ---------------------------------------------------------------------------
-# Edit experiment arguments here. Every value is copied to config.yaml.
-# ---------------------------------------------------------------------------
-
-CONFIG: dict[str, Any] = {
-    "MODEL_NAME": "ijepa-vit-h-in1k",
-    "CHECKPOINT_PATH": None,
-    "CACHE_DIR": None,
-    "FORCE_DOWNLOAD": False,
-    "IMAGENET_ROOT": "/content/imagenet/val",
-    "OUTPUT_ROOT": "outputs/ijepa_task7",
-    "NUM_SAMPLES": 1000,
-    # Fifty classes gives 20 images per class. Half are used to fit the error
-    # geometry and half to estimate category-level failure rankings.
-    "NUM_CLASSES": 50,
-    "CALIBRATION_FRACTION": 0.5,
-    "SEED": 42,
-    "DEVICE": "cuda" if torch.cuda.is_available() else "cpu",
-    "PRECISION": "fp16" if torch.cuda.is_available() else "fp32",
-    "BATCH_SIZE": 16,
-    # Every image predicts the same central target block, keeping patch
-    # positions comparable across the dataset.
-    "TARGET_PATCH_SIDE": 4,
-    # Randomized low-rank PCA. Increase toward the embedding dimension for a
-    # more complete covariance model at additional compute cost.
+CONFIG: dict[str, Any] = core.base_config("outputs/ijepa_task7") | {
     "PCA_COMPONENTS": 256,
     "PCA_POWER_ITERATIONS": 4,
-    # Added to every retained eigenvalue as RIDGE_FRACTION * mean(eigenvalue).
-    "RIDGE_FRACTION": 1e-4,
     "TOP_K_CATEGORIES": 10,
-    "ANNOTATE_RANK_SHIFTS": 8,
-    "PLOT_DPI": 180,
-    "SHOW_PLOTS": True,
+    "RUN_DINOV2": True,
+    "DINOV2_MODEL": "facebook/dinov2-base",
+    "DINO_NEIGHBORS": 3,
 }
 
 
-METRIC_KEYS = (
-    "prediction_mse",
-    "prediction_rmse",
-    "prediction_l2",
-    "mahalanobis_zero",
-    "mahalanobis_centered",
-    "retained_centered_energy_fraction",
-)
-
-
 def validate_config() -> None:
-    """Validate inexpensive configuration constraints before loading anything."""
-    num_samples = int(CONFIG["NUM_SAMPLES"])
-    num_classes = int(CONFIG["NUM_CLASSES"])
-    if num_samples <= 0 or num_classes <= 1:
-        raise ValueError("NUM_SAMPLES must be positive and NUM_CLASSES must exceed one")
-    if num_samples % num_classes:
-        raise ValueError("NUM_SAMPLES must be divisible by NUM_CLASSES")
-    if num_samples // num_classes < 4:
-        raise ValueError("Task 7 needs at least four images per class for its held-out split")
-    fraction = float(CONFIG["CALIBRATION_FRACTION"])
-    if not 0.0 < fraction < 1.0:
-        raise ValueError("CALIBRATION_FRACTION must lie strictly between zero and one")
-    if int(CONFIG["BATCH_SIZE"]) <= 0 or int(CONFIG["PCA_COMPONENTS"]) <= 1:
-        raise ValueError("BATCH_SIZE must be positive and PCA_COMPONENTS must exceed one")
-    if float(CONFIG["RIDGE_FRACTION"]) < 0.0:
-        raise ValueError("RIDGE_FRACTION cannot be negative")
-    if CONFIG["PRECISION"] == "fp16" and not str(CONFIG["DEVICE"]).startswith("cuda"):
-        raise ValueError("fp16 requires a CUDA device; use fp32 on CPU")
+    core.validate_base_config(CONFIG)
+    if int(CONFIG["PCA_COMPONENTS"]) < 2:
+        raise ValueError("PCA_COMPONENTS must exceed one")
+    if int(CONFIG["PCA_POWER_ITERATIONS"]) < 0:
+        raise ValueError("PCA_POWER_ITERATIONS cannot be negative")
+    if int(CONFIG["DINO_NEIGHBORS"]) <= 0:
+        raise ValueError("DINO_NEIGHBORS must be positive")
+    if CONFIG["RUN_DINOV2"] and importlib.util.find_spec("transformers") is None:
+        raise ValueError("RUN_DINOV2 needs transformers; install it or set RUN_DINOV2=False")
 
 
-def seed_everything() -> None:
-    """Seed subset selection, splitting, and randomized PCA."""
-    seed = int(CONFIG["SEED"])
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(seed)
-
-
-def create_run_directory() -> Path:
-    """Create a timestamped output directory and record the exact configuration."""
-    run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    run_dir = Path(CONFIG["OUTPUT_ROOT"]) / run_id
-    run_dir.mkdir(parents=True, exist_ok=False)
-    logged_config = dict(CONFIG)
-    logged_config["RUN_ID"] = run_id
-    logged_config["CREATED_AT_UTC"] = datetime.now(timezone.utc).isoformat()
-    with (run_dir / "config.yaml").open("w", encoding="utf-8") as handle:
-        yaml.safe_dump(logged_config, handle, sort_keys=False)
-    return run_dir
-
-
-def load_world_model() -> Any:
-    """Load the official context encoder, target encoder, and predictor via ModelHub."""
-    checkpoint_path = CONFIG.get("CHECKPOINT_PATH")
-    if checkpoint_path:
-        adapter = ModelHub.load_checkpoint(
-            checkpoint_path, backend="ijepa", device=CONFIG["DEVICE"]
-        )
-    else:
-        adapter = ModelHub.load(
-            CONFIG["MODEL_NAME"],
-            cache_dir=CONFIG.get("CACHE_DIR"),
-            device=CONFIG["DEVICE"],
-            force_download=bool(CONFIG["FORCE_DOWNLOAD"]),
-        )
-    if CONFIG["PRECISION"] == "fp16":
-        adapter = adapter.half()
-    adapter.eval()
-    return adapter
-
-
-def model_device_dtype(adapter: Any) -> tuple[torch.device, torch.dtype]:
-    """Return the adapter parameter device and dtype."""
-    parameter = next(adapter.context_encoder.parameters())
-    return parameter.device, parameter.dtype
-
-
-def build_fixed_masks(adapter: Any) -> tuple[list[int], list[int]]:
-    """Construct complementary context indices and a central square target block."""
-    num_patches = int(adapter.context_encoder.patch_embed.n_patches)
-    grid = int(math.sqrt(num_patches))
-    side = int(CONFIG["TARGET_PATCH_SIDE"])
-    if grid * grid != num_patches or side <= 0 or side >= grid:
-        raise ValueError("TARGET_PATCH_SIDE is invalid for the checkpoint patch grid")
-    start = (grid - side) // 2
-    target = {
-        row * grid + column
-        for row in range(start, start + side)
-        for column in range(start, start + side)
-    }
-    context = [index for index in range(num_patches) if index not in target]
-    return context, sorted(target)
-
-
-def load_image_batch(samples: list[dict[str, Any]], adapter: Any) -> torch.Tensor:
-    """Load and normalize one ImageNet batch."""
-    device, dtype = model_device_dtype(adapter)
-    images = [load_imagenet_image(sample["path"], image_size=224) for sample in samples]
-    return torch.cat(images, dim=0).to(device=device, dtype=dtype)
-
-
-@torch.no_grad()
-def collect_prediction_errors(
-    adapter: Any,
-    samples: list[dict[str, Any]],
-    context_ids: list[int],
-    target_ids: list[int],
-) -> torch.Tensor:
-    """Return prediction-minus-target errors shaped [images, patches, embedding]."""
-    chunks: list[torch.Tensor] = []
-    batch_size = int(CONFIG["BATCH_SIZE"])
-    total_batches = math.ceil(len(samples) / batch_size)
-    for batch_number, start in enumerate(range(0, len(samples), batch_size), start=1):
-        batch_samples = samples[start : start + batch_size]
-        observations = load_image_batch(batch_samples, adapter)
-        context = adapter.context_encoder(observations, patch_ids=context_ids)
-        prediction = adapter.predictor(context, context_ids, target_ids)
-        target = adapter.target_encoder(observations)[:, target_ids, :]
-        if prediction.shape != target.shape:
-            raise RuntimeError(
-                f"Predictor shape {tuple(prediction.shape)} does not match "
-                f"target shape {tuple(target.shape)}"
-            )
-        chunks.append((prediction - target).to(device="cpu", dtype=torch.float32))
-        print(f"  prediction errors: batch {batch_number}/{total_batches}", flush=True)
-    return torch.cat(chunks, dim=0)
-
-
-def stratified_split(samples: list[dict[str, Any]]) -> tuple[list[int], list[int]]:
-    """Split every class independently into PCA-calibration and evaluation images."""
-    rng = random.Random(int(CONFIG["SEED"]))
-    by_label: dict[int, list[int]] = {}
-    for index, sample in enumerate(samples):
-        by_label.setdefault(int(sample["label"]), []).append(index)
-
-    calibration: list[int] = []
-    evaluation: list[int] = []
-    fraction = float(CONFIG["CALIBRATION_FRACTION"])
-    for indices in by_label.values():
-        rng.shuffle(indices)
-        count = min(len(indices) - 1, max(1, round(len(indices) * fraction)))
-        calibration.extend(indices[:count])
-        evaluation.extend(indices[count:])
-    rng.shuffle(calibration)
-    rng.shuffle(evaluation)
-    return calibration, evaluation
-
-
-def fit_error_pca(errors: torch.Tensor) -> dict[str, torch.Tensor | float | int]:
-    """Fit regularized low-rank PCA to patch-level calibration errors."""
-    device = torch.device(CONFIG["DEVICE"])
-    vectors = errors.reshape(-1, errors.shape[-1]).to(device=device, dtype=torch.float32)
-    mean = vectors.mean(dim=0)
-    centered = vectors - mean
-    max_components = min(centered.shape[0], centered.shape[1])
-    components_requested = int(CONFIG["PCA_COMPONENTS"])
-    components_used = min(components_requested, max_components)
-    if components_used < 2:
-        raise ValueError("Not enough error vectors to fit at least two PCA components")
-
-    _, singular_values, components = torch.pca_lowrank(
-        centered,
-        q=components_used,
-        center=False,
-        niter=int(CONFIG["PCA_POWER_ITERATIONS"]),
-    )
-    eigenvalues = singular_values.square() / max(1, centered.shape[0] - 1)
-    total_variance = centered.var(dim=0, unbiased=True).sum()
-    explained_ratio = eigenvalues / total_variance.clamp_min(torch.finfo(torch.float32).eps)
-    ridge = float(CONFIG["RIDGE_FRACTION"]) * eigenvalues.mean()
-    precision_denominator = eigenvalues + ridge
-
-    return {
-        "mean": mean,
-        "components": components,
-        "eigenvalues": eigenvalues,
-        "explained_ratio": explained_ratio,
-        "precision_denominator": precision_denominator,
-        "ridge": float(ridge),
-        "components_used": components_used,
-        "observations": int(vectors.shape[0]),
-        "embedding_dim": int(vectors.shape[1]),
-    }
-
-
-def score_evaluation_errors(
-    errors: torch.Tensor,
-    pca: dict[str, torch.Tensor | float | int],
-) -> tuple[dict[str, torch.Tensor], torch.Tensor]:
-    """Score held-out images and return metrics plus mean per-PC contributions."""
-    device = torch.device(CONFIG["DEVICE"])
-    mean = pca["mean"]
-    components = pca["components"]
-    denominator = pca["precision_denominator"]
-    if not all(isinstance(value, torch.Tensor) for value in (mean, components, denominator)):
-        raise TypeError("PCA tensor state is incomplete")
-
-    metric_chunks: dict[str, list[torch.Tensor]] = {key: [] for key in METRIC_KEYS}
-    first_two_chunks: list[torch.Tensor] = []
-    contribution_sum = torch.zeros(components.shape[1], device=device)
-    patch_count = 0
-    batch_size = int(CONFIG["BATCH_SIZE"])
-
-    for start in range(0, errors.shape[0], batch_size):
-        batch = errors[start : start + batch_size].to(device=device, dtype=torch.float32)
-        flat = batch.reshape(-1, batch.shape[-1])
-        centered_flat = flat - mean
-        zero_coordinates = (flat @ components).reshape(
-            batch.shape[0], batch.shape[1], -1
-        )
-        centered_coordinates = (centered_flat @ components).reshape(
-            batch.shape[0], batch.shape[1], -1
-        )
-        zero_contributions = zero_coordinates.square() / denominator
-        centered_contributions = centered_coordinates.square() / denominator
-
-        mse = batch.square().mean(dim=(1, 2))
-        metric_chunks["prediction_mse"].append(mse.cpu())
-        metric_chunks["prediction_rmse"].append(mse.sqrt().cpu())
-        metric_chunks["prediction_l2"].append(
-            batch.square().sum(dim=2).sqrt().mean(dim=1).cpu()
-        )
-        metric_chunks["mahalanobis_zero"].append(
-            zero_contributions.sum(dim=2).mean(dim=1).sqrt().cpu()
-        )
-        metric_chunks["mahalanobis_centered"].append(
-            centered_contributions.sum(dim=2).mean(dim=1).sqrt().cpu()
-        )
-        retained_energy = centered_coordinates.square().sum(dim=(1, 2))
-        total_centered_energy = centered_flat.square().reshape(
-            batch.shape[0], batch.shape[1], -1
-        ).sum(dim=(1, 2))
-        metric_chunks["retained_centered_energy_fraction"].append(
-            (retained_energy / total_centered_energy.clamp_min(1e-12)).cpu()
-        )
-        first_two_chunks.append(centered_coordinates[:, :, :2].mean(dim=1).cpu())
-        contribution_sum += zero_contributions.sum(dim=(0, 1))
-        patch_count += batch.shape[0] * batch.shape[1]
-
-    metrics = {key: torch.cat(chunks) for key, chunks in metric_chunks.items()}
-    metrics["pca_coordinates_2d"] = torch.cat(first_two_chunks)
-    return metrics, (contribution_sum / patch_count).cpu()
-
-
-def aggregate_categories(
+def build_sample_rows(
     samples: list[dict[str, Any]],
     evaluation_indices: list[int],
     metrics: dict[str, torch.Tensor],
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Build per-image records and category means/stds for held-out samples."""
-    sample_rows: list[dict[str, Any]] = []
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
     for position, sample_index in enumerate(evaluation_indices):
         sample = samples[sample_index]
         row: dict[str, Any] = {
@@ -338,289 +54,302 @@ def aggregate_categories(
             "label": int(sample["label"]),
             "class_name": sample["class_name"],
         }
-        for key in METRIC_KEYS:
+        for key in core.RAW_METRIC_KEYS:
             row[key] = float(metrics[key][position])
-        coordinates = metrics["pca_coordinates_2d"][position]
-        row["pca_1"] = float(coordinates[0])
-        row["pca_2"] = float(coordinates[1])
-        sample_rows.append(row)
+        rows.append(row)
+    return rows
 
+
+def aggregate_categories(sample_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     by_label: dict[int, list[dict[str, Any]]] = {}
     for row in sample_rows:
-        by_label.setdefault(row["label"], []).append(row)
-
-    category_rows: list[dict[str, Any]] = []
+        by_label.setdefault(int(row["label"]), []).append(row)
+    categories: list[dict[str, Any]] = []
     for label, rows in sorted(by_label.items()):
         category: dict[str, Any] = {
             "label": label,
             "class_name": rows[0]["class_name"],
             "n": len(rows),
         }
-        for key in METRIC_KEYS:
-            values = np.asarray([row[key] for row in rows], dtype=np.float64)
+        for key in core.RAW_METRIC_KEYS:
+            values = np.asarray([float(row[key]) for row in rows])
             category[f"mean_{key}"] = float(values.mean())
-            category[f"std_{key}"] = (
-                float(values.std(ddof=1)) if values.size > 1 else 0.0
-            )
-        category_rows.append(category)
-    return sample_rows, category_rows
+            category[f"std_{key}"] = float(values.std(ddof=1)) if len(values) > 1 else 0.0
+        categories.append(category)
+    return categories
 
 
-def descending_ranks(rows: list[dict[str, Any]], metric: str) -> dict[int, int]:
-    """Return one-based descending rank positions keyed by remapped class label."""
-    ordered = sorted(rows, key=lambda row: row[metric], reverse=True)
-    return {int(row["label"]): rank for rank, row in enumerate(ordered, start=1)}
-
-
-def rank_comparison(category_rows: list[dict[str, Any]]) -> dict[str, Any]:
-    """Compare MSE and precision-weighted category failure rankings."""
-    mse_ranks = descending_ranks(category_rows, "mean_prediction_mse")
-    zero_ranks = descending_ranks(category_rows, "mean_mahalanobis_zero")
-    centered_ranks = descending_ranks(category_rows, "mean_mahalanobis_centered")
-    labels = sorted(mse_ranks)
-
-    for row in category_rows:
+def ranking_analysis(categories: list[dict[str, Any]]) -> dict[str, Any]:
+    labels = [int(row["label"]) for row in categories]
+    fields = {
+        "predictor_mse": "mean_predictor_mse",
+        "mahalanobis_zero": "mean_predictor_error_mahalanobis_zero",
+        "mahalanobis_centered": "mean_predictor_error_mahalanobis_centered",
+    }
+    ranks = {
+        name: core.descending_ranks({int(row["label"]): float(row[field]) for row in categories})
+        for name, field in fields.items()
+    }
+    for row in categories:
         label = int(row["label"])
-        row["mse_rank"] = mse_ranks[label]
-        row["mahalanobis_zero_rank"] = zero_ranks[label]
-        row["mahalanobis_centered_rank"] = centered_ranks[label]
-        row["zero_rank_shift"] = zero_ranks[label] - mse_ranks[label]
-        row["absolute_zero_rank_shift"] = abs(row["zero_rank_shift"])
-
-    mse = np.asarray([mse_ranks[label] for label in labels], dtype=np.float64)
-    zero = np.asarray([zero_ranks[label] for label in labels], dtype=np.float64)
-    centered = np.asarray([centered_ranks[label] for label in labels], dtype=np.float64)
-
-    def spearman(left: np.ndarray, right: np.ndarray) -> float:
-        return float(np.corrcoef(left, right)[0, 1])
-
-    def kendall(left: np.ndarray, right: np.ndarray) -> float:
-        concordant = 0
-        discordant = 0
-        for first in range(len(left)):
-            for second in range(first + 1, len(left)):
-                product = (left[first] - left[second]) * (right[first] - right[second])
-                concordant += int(product > 0)
-                discordant += int(product < 0)
-        pairs = concordant + discordant
-        return float((concordant - discordant) / pairs) if pairs else 0.0
-
+        row["predictor_mse_difficulty_rank"] = ranks["predictor_mse"][label]
+        row["mahalanobis_zero_difficulty_rank"] = ranks["mahalanobis_zero"][label]
+        row["mahalanobis_centered_difficulty_rank"] = ranks["mahalanobis_centered"][label]
+    mse = np.asarray([ranks["predictor_mse"][label] for label in labels], dtype=float)
     top_k = min(int(CONFIG["TOP_K_CATEGORIES"]), len(labels))
-    top_mse = {label for label, rank in mse_ranks.items() if rank <= top_k}
-    top_zero = {label for label, rank in zero_ranks.items() if rank <= top_k}
-    overlap = len(top_mse & top_zero)
+    top_mse = {label for label in labels if ranks["predictor_mse"][label] <= top_k}
+
+    def comparison(name: str) -> dict[str, Any]:
+        other = np.asarray([ranks[name][label] for label in labels], dtype=float)
+        top_other = {label for label in labels if ranks[name][label] <= top_k}
+        shifts = np.abs(other - mse)
+        return {
+            "spearman_vs_predictor_mse": float(np.corrcoef(mse, other)[0, 1]),
+            "top_k": top_k,
+            "top_k_overlap_count": len(top_mse & top_other),
+            "top_k_overlap_fraction": float(len(top_mse & top_other) / top_k),
+            "mean_absolute_rank_shift": float(shifts.mean()),
+            "max_absolute_rank_shift": int(shifts.max()),
+        }
 
     return {
         "category_count": len(labels),
-        "spearman_mse_vs_mahalanobis_zero": spearman(mse, zero),
-        "kendall_mse_vs_mahalanobis_zero": kendall(mse, zero),
-        "spearman_mse_vs_mahalanobis_centered": spearman(mse, centered),
-        "kendall_mse_vs_mahalanobis_centered": kendall(mse, centered),
-        "top_k": top_k,
-        "top_k_overlap_count": overlap,
-        "top_k_overlap_fraction": float(overlap / top_k),
-        "mean_absolute_zero_rank_shift": float(np.abs(zero - mse).mean()),
-        "max_absolute_zero_rank_shift": int(np.abs(zero - mse).max()),
+        "mahalanobis_zero": comparison("mahalanobis_zero"),
+        "mahalanobis_centered": comparison("mahalanobis_centered"),
     }
 
 
-def finish_plot(fig: Any, output_path: Path) -> None:
-    """Save a figure and optionally display it in an interactive environment."""
+def raw_distance_correlations(
+    sample_rows: list[dict[str, Any]], categories: list[dict[str, Any]]
+) -> dict[str, Any]:
+    def pair(rows: list[dict[str, Any]], left: str, right: str) -> dict[str, float]:
+        x = np.asarray([float(row[left]) for row in rows])
+        y = np.asarray([float(row[right]) for row in rows])
+        return {
+            "pearson": float(np.corrcoef(x, y)[0, 1]),
+            "spearman": core.spearman(x, y),
+        }
+
+    return {
+        "per_image": {
+            "predictor_mse_vs_mahalanobis_zero": pair(
+                sample_rows, "predictor_mse", "predictor_error_mahalanobis_zero"
+            ),
+            "predictor_mse_vs_mahalanobis_centered": pair(
+                sample_rows, "predictor_mse", "predictor_error_mahalanobis_centered"
+            ),
+            "mahalanobis_zero_vs_centered": pair(
+                sample_rows,
+                "predictor_error_mahalanobis_zero",
+                "predictor_error_mahalanobis_centered",
+            ),
+        },
+        "per_category": {
+            "predictor_mse_vs_mahalanobis_zero": pair(
+                categories,
+                "mean_predictor_mse",
+                "mean_predictor_error_mahalanobis_zero",
+            ),
+            "predictor_mse_vs_mahalanobis_centered": pair(
+                categories,
+                "mean_predictor_mse",
+                "mean_predictor_error_mahalanobis_centered",
+            ),
+        },
+    }
+
+
+@torch.no_grad()
+def compute_dinov2_embeddings(paths: list[str]) -> np.ndarray:
+    from PIL import Image
+    from transformers import AutoImageProcessor, AutoModel
+
+    device = torch.device(CONFIG["DEVICE"])
+    processor = AutoImageProcessor.from_pretrained(CONFIG["DINOV2_MODEL"])
+    model = AutoModel.from_pretrained(CONFIG["DINOV2_MODEL"]).to(device).eval()
+    features: list[torch.Tensor] = []
+    batch_size = int(CONFIG["BATCH_SIZE"])
+    for start in range(0, len(paths), batch_size):
+        images = []
+        for path in paths[start : start + batch_size]:
+            with Image.open(path) as handle:
+                images.append(handle.convert("RGB"))
+        inputs = processor(images=images, return_tensors="pt").to(device)
+        output = model(**inputs)
+        pooled = getattr(output, "pooler_output", None)
+        features.append((pooled if pooled is not None else output.last_hidden_state[:, 0]).cpu())
+    embeddings = torch.cat(features).float()
+    embeddings /= embeddings.norm(dim=1, keepdim=True).clamp_min(1e-12)
+    return embeddings.numpy()
+
+
+def dino_neighbor_analysis(
+    sample_rows: list[dict[str, Any]], embeddings: np.ndarray
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Record top-three nearest/farthest DINO samples and their raw metrics."""
+    similarity = embeddings @ embeddings.T
+    count = len(sample_rows)
+    k = min(int(CONFIG["DINO_NEIGHBORS"]), count - 1)
+    nearest_similarity = similarity.copy()
+    np.fill_diagonal(nearest_similarity, -np.inf)
+    nearest = np.argsort(-nearest_similarity, axis=1)[:, :k]
+    farthest_similarity = similarity.copy()
+    np.fill_diagonal(farthest_similarity, np.inf)
+    farthest = np.argsort(farthest_similarity, axis=1)[:, :k]
+
+    def compact(row: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "sample_index": row["sample_index"],
+            "path": row["path"],
+            "label": row["label"],
+            "class_name": row["class_name"],
+            **{key: row[key] for key in core.RAW_METRIC_KEYS},
+        }
+
+    records: list[dict[str, Any]] = []
+    for query_index, query in enumerate(sample_rows):
+        item: dict[str, Any] = {"query": compact(query)}
+        for name, indices in (
+            ("nearest", nearest[query_index]),
+            ("farthest", farthest[query_index]),
+        ):
+            group: list[dict[str, Any]] = []
+            for neighbor_index in indices:
+                neighbor = sample_rows[int(neighbor_index)]
+                record = compact(neighbor)
+                record["dino_cosine_similarity"] = float(similarity[query_index, neighbor_index])
+                record["same_class"] = bool(query["label"] == neighbor["label"])
+                record["absolute_metric_differences"] = {
+                    key: abs(float(query[key]) - float(neighbor[key]))
+                    for key in core.RAW_METRIC_KEYS
+                }
+                group.append(record)
+            item[name] = group
+        records.append(item)
+
+    off_diagonal = ~np.eye(count, dtype=bool)
+    summary: dict[str, Any] = {
+        "model": CONFIG["DINOV2_MODEL"],
+        "embedding_dim": int(embeddings.shape[1]),
+        "neighbors_per_side": k,
+        "same_class_fraction_nearest": float(
+            np.mean(
+                [
+                    sample_rows[i]["label"] == sample_rows[int(j)]["label"]
+                    for i in range(count)
+                    for j in nearest[i]
+                ]
+            )
+        ),
+        "metrics": {},
+    }
+    for key in core.RAW_METRIC_KEYS:
+        values = np.asarray([float(row[key]) for row in sample_rows])
+        all_diff = np.abs(values[:, None] - values[None, :])[off_diagonal].mean()
+        near_diff = np.mean(
+            [abs(values[i] - values[int(j)]) for i in range(count) for j in nearest[i]]
+        )
+        far_diff = np.mean(
+            [abs(values[i] - values[int(j)]) for i in range(count) for j in farthest[i]]
+        )
+        summary["metrics"][key] = {
+            "mean_absolute_difference_nearest": float(near_diff),
+            "mean_absolute_difference_farthest": float(far_diff),
+            "mean_absolute_difference_all_pairs": float(all_diff),
+            "nearest_to_all_ratio": float(near_diff / max(all_diff, 1e-12)),
+            "farthest_to_all_ratio": float(far_diff / max(all_diff, 1e-12)),
+        }
+    return summary, records
+
+
+def plot_category_bars(run_dir: Path, categories: list[dict[str, Any]]) -> None:
+    ordered = sorted(categories, key=lambda row: row["mean_predictor_mse"], reverse=True)
+    mse = np.asarray([row["mean_predictor_mse"] for row in ordered])
+    maha = np.asarray([row["mean_predictor_error_mahalanobis_centered"] for row in ordered])
+    mse /= max(float(mse.max()), 1e-12)
+    maha /= max(float(maha.max()), 1e-12)
+    x = np.arange(len(ordered))
+    fig, axis = plt.subplots(figsize=(15, 5.5))
+    axis.bar(x - 0.2, mse, 0.4, label="Predictor MSE / maximum")
+    axis.bar(x + 0.2, maha, 0.4, label="Centered predictor-error Mahalanobis / maximum")
+    axis.set_xticks(x, [row["class_name"] for row in ordered], rotation=90, fontsize=7)
+    axis.set(xlabel="ImageNet class", ylabel="Within-metric normalized value")
+    axis.legend(frameon=False)
+    axis.grid(axis="y", alpha=0.2)
     fig.tight_layout()
-    fig.savefig(output_path, dpi=int(CONFIG["PLOT_DPI"]), bbox_inches="tight")
+    fig.savefig(run_dir / "per_class_raw_metric_bars.png", dpi=int(CONFIG["PLOT_DPI"]))
     if CONFIG["SHOW_PLOTS"]:
         plt.show()
     plt.close(fig)
 
 
-def save_plots(
-    run_dir: Path,
-    pca: dict[str, torch.Tensor | float | int],
-    metrics: dict[str, torch.Tensor],
-    category_rows: list[dict[str, Any]],
-    mean_pc_contribution: torch.Tensor,
-) -> None:
-    """Save the Task 7 PCA, distance, and category-ranking diagnostics."""
-    explained = pca["explained_ratio"]
-    if not isinstance(explained, torch.Tensor):
-        raise TypeError("PCA explained-variance state is missing")
-    explained_np = explained.detach().cpu().numpy()
-    component_numbers = np.arange(1, len(explained_np) + 1)
-
-    fig, (axis_variance, axis_cumulative) = plt.subplots(1, 2, figsize=(13, 4.8))
-    shown = min(50, len(explained_np))
-    axis_variance.bar(component_numbers[:shown], explained_np[:shown])
-    axis_variance.set(xlabel="Principal component", ylabel="Explained variance ratio")
-    axis_variance.set_title(f"First {shown} error PCs")
-    axis_cumulative.plot(component_numbers, np.cumsum(explained_np), linewidth=2)
-    axis_cumulative.set(xlabel="Retained components", ylabel="Cumulative variance")
-    axis_cumulative.set_ylim(0, 1.02)
-    axis_cumulative.grid(alpha=0.25)
-    axis_cumulative.set_title("Retained error variance")
-    finish_plot(fig, run_dir / "pca_explained_variance.png")
-
-    coordinates = metrics["pca_coordinates_2d"].numpy()
-    mse = metrics["prediction_mse"].numpy()
-    fig, axis = plt.subplots(figsize=(7.5, 6))
-    scatter = axis.scatter(coordinates[:, 0], coordinates[:, 1], c=mse, s=18, alpha=0.7)
-    axis.set(xlabel="Error PC1", ylabel="Error PC2", title="Held-out image errors")
-    fig.colorbar(scatter, ax=axis, label="Prediction MSE")
-    finish_plot(fig, run_dir / "error_pca_scatter.png")
-
-    category_mse = np.asarray(
-        [row["mean_prediction_mse"] for row in category_rows], dtype=np.float64
-    )
-    category_maha = np.asarray(
-        [row["mean_mahalanobis_zero"] for row in category_rows], dtype=np.float64
-    )
-    shifts = np.asarray(
-        [row["absolute_zero_rank_shift"] for row in category_rows], dtype=np.float64
-    )
-    fig, axis = plt.subplots(figsize=(8, 6))
-    scatter = axis.scatter(category_mse, category_maha, c=shifts, cmap="magma", s=45)
-    axis.set(
-        xlabel="Category mean prediction MSE",
-        ylabel="Category mean zero-referenced Mahalanobis",
-        title="Metric sensitivity to embedding anisotropy",
-    )
-    fig.colorbar(scatter, ax=axis, label="Absolute rank shift")
-    annotate = min(int(CONFIG["ANNOTATE_RANK_SHIFTS"]), len(category_rows))
-    for row in sorted(
-        category_rows, key=lambda item: item["absolute_zero_rank_shift"], reverse=True
-    )[:annotate]:
-        axis.annotate(
-            row["class_name"],
-            (row["mean_prediction_mse"], row["mean_mahalanobis_zero"]),
-            fontsize=7,
-            xytext=(4, 3),
-            textcoords="offset points",
-        )
-    finish_plot(fig, run_dir / "mse_vs_mahalanobis.png")
-
-    fig, axis = plt.subplots(figsize=(7, 7))
-    mse_rank = np.asarray([row["mse_rank"] for row in category_rows])
-    maha_rank = np.asarray([row["mahalanobis_zero_rank"] for row in category_rows])
-    axis.scatter(mse_rank, maha_rank, c=shifts, cmap="magma", s=45)
-    limit = len(category_rows) + 1
-    axis.plot([1, limit], [1, limit], linestyle="--", color="gray")
-    axis.set(
-        xlabel="MSE failure rank (1 = worst)",
-        ylabel="Mahalanobis failure rank (1 = worst)",
-        title="ImageNet category ranking changes",
-        xlim=(limit, 0),
-        ylim=(limit, 0),
-    )
-    finish_plot(fig, run_dir / "category_rank_comparison.png")
-
-    contribution = mean_pc_contribution.numpy()
-    shown = min(50, len(contribution))
-    fig, axis = plt.subplots(figsize=(12, 5))
-    axis.bar(np.arange(1, shown + 1), contribution[:shown])
-    axis.set(
-        xlabel="Principal component",
-        ylabel="Mean precision-weighted squared error",
-        title=f"Contribution of first {shown} PCs to Mahalanobis distance",
-    )
-    finish_plot(fig, run_dir / "precision_weighted_pc_contributions.png")
-
-
 def main() -> None:
-    """Run the full Task 7 analysis."""
     validate_config()
-    seed_everything()
-    run_dir = create_run_directory()
+    core.seed_everything(CONFIG)
+    run_dir = core.create_run_directory(CONFIG)
+    samples = core.load_samples(CONFIG)
+    calibration_indices, evaluation_indices = core.split_from_config(samples, CONFIG)
+    core.save_dataset_manifest(run_dir, samples, calibration_indices)
 
-    samples = load_imagenet_subset(
-        CONFIG["IMAGENET_ROOT"],
-        num_samples=int(CONFIG["NUM_SAMPLES"]),
-        num_classes=int(CONFIG["NUM_CLASSES"]),
-        seed=int(CONFIG["SEED"]),
+    adapter = core.load_world_model(CONFIG)
+    context_ids, target_ids = core.build_fixed_masks(adapter, int(CONFIG["TARGET_PATCH_SIDE"]))
+    errors = core.collect_prediction_errors(
+        adapter, samples, context_ids, target_ids, int(CONFIG["BATCH_SIZE"])
     )
-    calibration_indices, evaluation_indices = stratified_split(samples)
-    manifest = []
-    calibration_set = set(calibration_indices)
-    for index, sample in enumerate(samples):
-        manifest.append(
-            {
-                **sample,
-                "sample_index": index,
-                "split": "calibration" if index in calibration_set else "evaluation",
-            }
-        )
-    (run_dir / "dataset_manifest.json").write_text(
-        json.dumps(manifest, indent=2), encoding="utf-8"
+    pca = core.fit_error_pca(
+        errors[calibration_indices],
+        int(CONFIG["PCA_COMPONENTS"]),
+        CONFIG["DEVICE"],
+        int(CONFIG["PCA_POWER_ITERATIONS"]),
+        float(CONFIG["RIDGE_FRACTION"]),
     )
+    projected = core.project_errors(
+        errors[evaluation_indices], pca, int(CONFIG["BATCH_SIZE"]), CONFIG["DEVICE"]
+    )
+    metrics = core.raw_metrics_from_projection(projected, pca)
+    sample_rows = build_sample_rows(samples, evaluation_indices, metrics)
+    categories = aggregate_categories(sample_rows)
+    ranking = ranking_analysis(categories)
+    correlations = raw_distance_correlations(sample_rows, categories)
 
-    adapter = load_world_model()
-    context_ids, target_ids = build_fixed_masks(adapter)
-    print(
-        f"Collecting errors for {len(samples)} images and {len(target_ids)} target patches.",
-        flush=True,
-    )
-    errors = collect_prediction_errors(adapter, samples, context_ids, target_ids)
+    core.save_json(run_dir / "per_sample_metrics.json", sample_rows)
+    core.save_json(run_dir / "category_metrics.json", categories)
+    plot_category_bars(run_dir, categories)
 
-    pca = fit_error_pca(errors[calibration_indices])
-    evaluation_metrics, mean_pc_contribution = score_evaluation_errors(
-        errors[evaluation_indices], pca
-    )
-    sample_rows, category_rows = aggregate_categories(
-        samples, evaluation_indices, evaluation_metrics
-    )
-    ranking = rank_comparison(category_rows)
+    visual_similarity: dict[str, Any] = {}
+    if CONFIG["RUN_DINOV2"]:
+        embeddings = compute_dinov2_embeddings([row["path"] for row in sample_rows])
+        visual_similarity, neighbor_rows = dino_neighbor_analysis(sample_rows, embeddings)
+        core.save_json(run_dir / "dinov2_sample_neighbors.json", neighbor_rows)
 
-    explained = pca["explained_ratio"]
-    eigenvalues = pca["eigenvalues"]
-    if not isinstance(explained, torch.Tensor) or not isinstance(eigenvalues, torch.Tensor):
-        raise TypeError("PCA result tensors are missing")
-    pca_summary = {
-        "calibration_images": len(calibration_indices),
-        "evaluation_images": len(evaluation_indices),
-        "patch_observations": int(pca["observations"]),
-        "embedding_dim": int(pca["embedding_dim"]),
-        "components_used": int(pca["components_used"]),
-        "ridge": float(pca["ridge"]),
-        "retained_variance_fraction": float(explained.sum()),
-        "explained_variance_ratio": explained.detach().cpu().tolist(),
-        "eigenvalues": eigenvalues.detach().cpu().tolist(),
-        "mean_precision_weighted_pc_contribution": mean_pc_contribution.tolist(),
-    }
-
-    (run_dir / "per_sample_metrics.json").write_text(
-        json.dumps(sample_rows, indent=2), encoding="utf-8"
-    )
-    (run_dir / "category_metrics.json").write_text(
-        json.dumps(category_rows, indent=2), encoding="utf-8"
-    )
-    torch.save(
-        {
-            "mean": pca["mean"].detach().cpu(),
-            "components": pca["components"].detach().cpu(),
-            "eigenvalues": eigenvalues.detach().cpu(),
-            "precision_denominator": pca["precision_denominator"].detach().cpu(),
-        },
-        run_dir / "pca_state.pt",
-    )
-    save_plots(run_dir, pca, evaluation_metrics, category_rows, mean_pc_contribution)
-
-    results = {
+    result = {
         "config": CONFIG,
         "model": {
             "name": CONFIG["MODEL_NAME"],
-            "context_patches": context_ids,
-            "target_patches": target_ids,
-            "target_patch_count": len(target_ids),
             "embedding_dim": int(errors.shape[-1]),
+            "context_patch_count": len(context_ids),
+            "target_patch_count": len(target_ids),
         },
-        "error_definition": "predictor_embedding - target_encoder_embedding",
-        "pca": pca_summary,
+        "split": {
+            "calibration_images": len(calibration_indices),
+            "evaluation_images": len(evaluation_indices),
+            "calibration_patch_errors": len(calibration_indices) * len(target_ids),
+        },
+        "pca": {
+            "components": int(pca["components_used"]),
+            "ridge": float(pca["ridge"]),
+            "calibration_variance_explained": float(pca["explained_ratio"].sum()),
+            "mean_centered_predictor_squared_error_fraction_captured": float(
+                projected["centered_coordinates"].square().sum()
+                / projected["total_centered_squared_error"].sum().clamp_min(1e-12)
+            ),
+        },
+        "raw_distance_correlations": correlations,
         "ranking_sensitivity": ranking,
-        "category_metrics": category_rows,
+        "dinov2_similarity": visual_similarity,
     }
-    (run_dir / "results.json").write_text(
-        json.dumps(results, indent=2), encoding="utf-8"
-    )
-    print(f"Saved Task 7 run to {run_dir.resolve()}", flush=True)
-    print(f"Ranking sensitivity: {ranking}", flush=True)
+    core.save_json(run_dir / "results.json", result)
+    print(f"Saved Task 7 main run to {run_dir.resolve()}", flush=True)
 
 
 if __name__ == "__main__":
