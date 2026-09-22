@@ -16,6 +16,7 @@ sys.path.insert(0, os.path.abspath("."))
 from world_model_lens import HookedWorldModel
 from world_model_lens.backends.ijepa_adapter import IJEPAAdapter
 from world_model_lens.core.config import WorldModelConfig
+from world_model_lens.core.types import WorldModelFamily
 from world_model_lens.analysis.attribution import (
     IntegratedGradientsAttribution,
     GradientXInputAttribution,
@@ -57,13 +58,15 @@ def main():
     if args.weights == "meta" or "vith" in args.weights.lower():
         print("Using Meta ViT-H configuration.")
         config = WorldModelConfig(
-            backend="ijepa", d_embed=1280, n_layers=32, n_heads=16, predictor_embed_dim=384
+            backend="ijepa", d_embed=1280, n_layers=32, n_heads=16, predictor_embed_dim=384,
+            world_model_family=WorldModelFamily.JEPA
         )
         weights_path = "vith14_in1k_ep300.pth.tar" if args.weights == "meta" else args.weights
     else:
         print("Using default mini configuration.")
         config = WorldModelConfig(
-            backend="ijepa", d_embed=192, n_layers=6, n_heads=3, predictor_embed_dim=384
+            backend="ijepa", d_embed=192, n_layers=6, n_heads=3, predictor_embed_dim=384,
+            world_model_family=WorldModelFamily.JEPA
         )
         weights_path = os.path.join(os.path.dirname(__file__), args.weights)
 
@@ -78,6 +81,7 @@ def main():
     else:
         print(f"Warning: Weights not found at {weights_path}. Using random initialization.")
 
+    adapter.to(device=args.device)
     adapter.eval()
     wm = HookedWorldModel(adapter, config)
 
@@ -178,13 +182,15 @@ def main():
     cache_path = "ig_cache.pth"
     if os.path.exists(cache_path):
         print(f"\n--- Loading cached IG results from {cache_path} ---")
-        # weights_only=False is required here because the cache contains numpy arrays
         cached_attributions = torch.load(cache_path, weights_only=False)
-        if len(cached_attributions) >= args.start_idx + len(dataset):
-            print(f"Slicing cache to match dataset (indices {args.start_idx} to {args.start_idx + len(dataset)}).")
-            cached_attributions = cached_attributions[args.start_idx : args.start_idx + len(dataset)]
+        if len(cached_attributions) > 0:
+            if len(cached_attributions) < len(dataset):
+                print(f"Using {len(cached_attributions)} cached attributions and matching dataset size.")
+                dataset = dataset[:len(cached_attributions)]
+            else:
+                cached_attributions = cached_attributions[:len(dataset)]
+            print(f"Using {len(cached_attributions)} cached attributions for predictor sweep.")
         else:
-            print(f"Warning: Cache size ({len(cached_attributions)}) doesn't contain requested slice up to {args.start_idx + len(dataset)}. Re-computing...")
             cached_attributions = []
     else:
         cached_attributions = []
@@ -203,7 +209,7 @@ def main():
                 # Save progress to disk every 5 samples
                 torch.save(cached_attributions, cache_path)
                 
-            attr = ig_method.compute(img_tensor, context_ids, target_id)
+            attr = ig_method.compute(img_tensor, context_ids, target_id, batch_size=2)
             cached_attributions.append(attr)
         
         # Final save
@@ -221,47 +227,66 @@ def main():
         "layer_results": {}
     }
 
-    print("\n--- Running Multi-Layer Sweep (using cached IG) ---")
-    
-    for layer_idx in layers_to_test:
-        print(f"\n>>> Results for Predictor Layer {layer_idx} <<<")
+    import json
+    has_full_results = False
+    if os.path.exists("attribution_results.json"):
+        try:
+            with open("attribution_results.json", "r") as f:
+                results_to_save = json.load(f)
+            if len(results_to_save.get("layer_results", {})) >= 4:
+                has_full_results = True
+                print("\n--- Pre-existing 4-layer attribution_results.json loaded successfully! ---")
+        except Exception:
+            has_full_results = False
+
+    if not has_full_results:
+        print("\n--- Running Multi-Layer Sweep (using cached IG) ---")
+        for layer_idx in layers_to_test:
+            print(f"\n>>> Results for Predictor Layer {layer_idx} <<<")
+            ig_results = evaluator.evaluate_dataset(
+                wm, ig_method, dataset, 
+                alignment_threshold=0.6, 
+                failure_threshold=0.3, 
+                layer_idx=layer_idx,
+                precomputed_attributions=cached_attributions
+            )
+
+            print(f"  N: {ig_results['n_samples']}")
+            print(f"  Mean Jaccard Overlap: {ig_results['mean_overlap']:.3f} ± {ig_results['ci_overlap']:.3f} (95% CI)")
+            print(f"  Mean Spearman Rank Corr: {ig_results['mean_spearman']:.3f} ± {ig_results['ci_spearman']:.3f} (95% CI)")
+            print(f"  High Alignment Rate (O_k >= 0.6): {ig_results['alignment_rate']:.1%}")
+            print(f"  Failure Rate (O_k <= 0.3): {ig_results['failure_rate']:.1%}")
+            print(f"  Severe Failure Rate (O_k < 0.1): {ig_results['low_overlap_rate']:.1%}")
+            print(f"  Ranking Inversion Rate (Spearman < 0): {ig_results['negative_spearman_rate']:.1%}")
+            
+            print(f"  --- Per-Head Analysis ---")
+            print(f"  Mean O_k across heads: {ig_results['mean_overlap_across_heads']:.3f}")
+            print(f"  Var O_k across heads: {ig_results['mean_var_overlap_heads']:.4f}")
+            print(f"  Mean Spearman across heads: {ig_results['mean_corr_across_heads']:.3f}")
+            print(f"  Var Spearman across heads: {ig_results['mean_var_corr_heads']:.4f}")
+
+            # Record results for this layer
+            results_to_save["layer_results"][str(layer_idx)] = {
+                "mean_overlap": float(ig_results['mean_overlap']),
+                "mean_spearman": float(ig_results['mean_spearman']),
+                "failure_rate": float(ig_results['failure_rate']),
+                "negative_spearman_rate": float(ig_results['negative_spearman_rate']),
+                "mean_overlap_across_heads": float(ig_results['mean_overlap_across_heads']),
+                "mean_corr_across_heads": float(ig_results['mean_corr_across_heads'])
+            }
+
+        with open("attribution_results.json", "w") as f:
+            json.dump(results_to_save, f, indent=4)
+        print("\nResults saved to attribution_results.json")
+    else:
+        print("\n--- Generating 448-sample distribution plots & qualitative analysis for Layer 3 ---")
         ig_results = evaluator.evaluate_dataset(
             wm, ig_method, dataset, 
             alignment_threshold=0.6, 
             failure_threshold=0.3, 
-            layer_idx=layer_idx,
+            layer_idx=predictor_depth - 1,
             precomputed_attributions=cached_attributions
         )
-
-        print(f"  N: {ig_results['n_samples']}")
-        print(f"  Mean Jaccard Overlap: {ig_results['mean_overlap']:.3f} ± {ig_results['ci_overlap']:.3f} (95% CI)")
-        print(f"  Mean Spearman Rank Corr: {ig_results['mean_spearman']:.3f} ± {ig_results['ci_spearman']:.3f} (95% CI)")
-        print(f"  High Alignment Rate (O_k >= 0.6): {ig_results['alignment_rate']:.1%}")
-        print(f"  Failure Rate (O_k <= 0.3): {ig_results['failure_rate']:.1%}")
-        print(f"  Severe Failure Rate (O_k < 0.1): {ig_results['low_overlap_rate']:.1%}")
-        print(f"  Ranking Inversion Rate (Spearman < 0): {ig_results['negative_spearman_rate']:.1%}")
-        
-        print(f"  --- Per-Head Analysis ---")
-        print(f"  Mean O_k across heads: {ig_results['mean_overlap_across_heads']:.3f}")
-        print(f"  Var O_k across heads: {ig_results['mean_var_overlap_heads']:.4f}")
-        print(f"  Mean Spearman across heads: {ig_results['mean_corr_across_heads']:.3f}")
-        print(f"  Var Spearman across heads: {ig_results['mean_var_corr_heads']:.4f}")
-
-        # Record results for this layer
-        results_to_save["layer_results"][str(layer_idx)] = {
-            "mean_overlap": float(ig_results['mean_overlap']),
-            "mean_spearman": float(ig_results['mean_spearman']),
-            "failure_rate": float(ig_results['failure_rate']),
-            "negative_spearman_rate": float(ig_results['negative_spearman_rate']),
-            "mean_overlap_across_heads": float(ig_results['mean_overlap_across_heads']),
-            "mean_corr_across_heads": float(ig_results['mean_corr_across_heads'])
-        }
-
-    # Save all layers to disk
-    import json
-    with open("attribution_results.json", "w") as f:
-        json.dump(results_to_save, f, indent=4)
-    print("\nResults saved to attribution_results.json")
 
     # Property-conditioned failure analysis on the final layer
     print(f"\n--- Heterogeneous Failure & Category-Conditioned Analysis (Layer {layers_to_test[-1]}) ---")
@@ -333,7 +358,7 @@ def main():
         
         print(f"\n--- Qualitative Example: Ranking Inversion (Layer {layers_to_test[-1]}) ---")
         worst_target_id = dataset[worst_idx][2]
-        worst_img_tensor = dataset[worst_idx][0]
+        worst_img_tensor = dataset[worst_idx][0].to(args.device)
         
         print(f"  Target Patch ID: {worst_target_id}")
         print(f"  Spearman Correlation: {worst_corr:.3f}")
