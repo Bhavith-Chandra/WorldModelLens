@@ -118,6 +118,8 @@ class WorldModelConfig:
     predictor_embed_dim: int = 384
     predictor_depth: int = 4
     predictor_heads: int = 6
+    num_frames: int = 16
+    tubelet_size: int = 2
 
     @property
     def d_z(self) -> int:

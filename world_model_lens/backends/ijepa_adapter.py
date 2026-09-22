@@ -124,7 +124,7 @@ class Block(nn.Module):
 
 class VisionTransformer(nn.Module):
     def __init__(
-        self, img_size=224, patch_size=16, in_chans=3, embed_dim=192, depth=6, num_heads=3
+        self, img_size=224, patch_size=16, in_chans=3, embed_dim=192, depth=6, num_heads=3, qkv_bias=True
     ):
         super().__init__()
         self.prefix = ""
@@ -135,7 +135,7 @@ class VisionTransformer(nn.Module):
         self.pos_drop = nn.Dropout(p=0.0)
 
         self.blocks = nn.ModuleList(
-            [Block(dim=embed_dim, num_heads=num_heads) for _ in range(depth)]
+            [Block(dim=embed_dim, num_heads=num_heads, qkv_bias=qkv_bias) for _ in range(depth)]
         )
         self.norm = nn.LayerNorm(embed_dim)
 
@@ -224,7 +224,7 @@ class IJEPAPredictor(HookedRootModule):
         self.pos_embed = nn.Parameter(torch.zeros(1, num_patches, predictor_embed_dim))
 
         self.blocks: nn.ModuleList = nn.ModuleList(
-            [Block(dim=predictor_embed_dim, num_heads=num_heads) for _ in range(depth)]
+            [Block(dim=predictor_embed_dim, num_heads=num_heads, qkv_bias=True) for _ in range(depth)]
         )
         self.norm = nn.LayerNorm(predictor_embed_dim)
 
@@ -534,35 +534,65 @@ class IJEPAAdapter(BaseModelAdapter, HookedRootModule):
         cls, path: str, config: Optional[WorldModelConfig] = None
     ) -> "IJEPAAdapter":
         """Loads I-JEPA from checkpoint. Supports native and Meta official weights."""
-        if config is None:
-            config = WorldModelConfig(backend="ijepa")
-        adapter = cls(config)
-
-        # Load state dict
         sd = torch.load(path, map_location="cpu")
 
-        # Official Meta weights are typically nested under 'model' or 'encoder'
-        if "model" in sd:
-            sd = sd["model"]
-        elif "encoder" in sd:
-            sd = sd["encoder"]
+        if config is None:
+            config = WorldModelConfig(backend="ijepa")
 
-        # Check if it's a Meta ViT-H checkpoint or a compatible one
-        # Meta keys are top-level (e.g. 'patch_embed.proj.weight')
-        # Our keys are nested under context_encoder and target_encoder
-        is_meta = any(k.startswith("patch_embed") or k.startswith("blocks.0") for k in sd.keys())
+        # Official Meta weights contain 'encoder' and 'predictor' keys
+        if "encoder" in sd:
+            enc_sd = sd["encoder"]
+            mapped_enc = {}
+            for k, v in enc_sd.items():
+                clean_k = k.replace("module.", "")
+                clean_k = clean_k.replace(".mlp.fc1.", ".mlp.0.")
+                clean_k = clean_k.replace(".mlp.fc2.", ".mlp.2.")
+                mapped_enc[clean_k] = v
 
-        if is_meta:
-            logger.info(
-                f"Detected Meta-style ViT checkpoint from {path}. Mapping to context/target encoders."
-            )
-            # Load into both encoders
-            adapter.context_encoder.load_state_dict(sd, strict=False)
-            adapter.target_encoder.load_state_dict(sd, strict=False)
-            # Predictor will remain initialized randomly unless also in checkpoint
+            if "predictor" in sd:
+                pred_sd = sd["predictor"]
+                mapped_pred = {}
+                max_pred_idx = 0
+                for k, v in pred_sd.items():
+                    clean_k = k.replace("module.predictor_blocks.", "blocks.")
+                    clean_k = clean_k.replace("module.predictor_pos_embed", "pos_embed")
+                    clean_k = clean_k.replace("module.predictor_norm.", "norm.")
+                    clean_k = clean_k.replace("module.predictor_proj.", "predictor_project_back.")
+                    clean_k = clean_k.replace("module.", "")
+                    clean_k = clean_k.replace(".mlp.fc1.", ".mlp.0.")
+                    clean_k = clean_k.replace(".mlp.fc2.", ".mlp.2.")
+                    mapped_pred[clean_k] = v
+                    if clean_k.startswith("blocks."):
+                        try:
+                            b_idx = int(clean_k.split(".")[1])
+                            max_pred_idx = max(max_pred_idx, b_idx)
+                        except ValueError:
+                            pass
+
+                if max_pred_idx > 0:
+                    config.predictor_depth = max_pred_idx + 1
+                    if max_pred_idx == 11:
+                        config.predictor_heads = 12
+
+            adapter = cls(config)
+
+            res_ctx = adapter.context_encoder.load_state_dict(mapped_enc, strict=True)
+            res_tgt = adapter.target_encoder.load_state_dict(mapped_enc, strict=True)
+            logger.info(f"Loaded Meta context & target encoders strictly. Status: {res_ctx}")
+            print(f"[IJEPAAdapter.from_checkpoint] Context/Target Encoder load status: {res_ctx}")
+
+            if "predictor" in sd:
+                res_pred = adapter.predictor.load_state_dict(mapped_pred, strict=True)
+                logger.info(f"Loaded Meta predictor strictly. Status: {res_pred}")
+                print(f"[IJEPAAdapter.from_checkpoint] Predictor load status: {res_pred}")
+        elif "model" in sd:
+            adapter = cls(config)
+            res = adapter.load_state_dict(sd["model"], strict=True)
+            print(f"[IJEPAAdapter.from_checkpoint] Full model load status: {res}")
         else:
-            # Traditional checkpoint matching our adapter's full state dict
-            adapter.load_state_dict(sd)
+            adapter = cls(config)
+            res = adapter.load_state_dict(sd, strict=True)
+            print(f"[IJEPAAdapter.from_checkpoint] State dict load status: {res}")
 
         adapter.eval()
         return adapter

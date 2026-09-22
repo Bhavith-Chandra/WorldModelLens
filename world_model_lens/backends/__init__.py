@@ -27,6 +27,8 @@ from world_model_lens.backends.tdmpc2 import TDMPC2Adapter
 from world_model_lens.backends.video_adapter import VideoWorldModelAdapter
 from world_model_lens.backends.planning_adapter import PlanningAdapter
 from world_model_lens.backends.ijepa_adapter import IJEPAAdapter
+from world_model_lens.backends.vjepa_adapter import VJEPAAdapter
+from world_model_lens.backends.mae_adapter import MAEAdapter
 from world_model_lens.backends.toy_video_model import ToyVideoAdapter, create_toy_video_adapter
 from world_model_lens.backends.toy_scientific_model import (
     ToyScientificAdapter,

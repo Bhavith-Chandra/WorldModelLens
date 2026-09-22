@@ -14,6 +14,17 @@ from world_model_lens.analysis.attribution import (
     AttributionEvaluator,
     extract_attention_weights,
 )
+from world_model_lens.analysis.ablation_knockout import (
+    PatchKnockoutEvaluator,
+    compute_auc,
+)
+from world_model_lens.analysis.significance import (
+    StatisticalSignificanceSuite,
+    compute_bootstrap_ci,
+    compute_paired_tests,
+    compute_cohens_d,
+    apply_multiple_comparisons_correction,
+)
 
 __all__ = [
     "BeliefAnalyzer",
@@ -26,4 +37,11 @@ __all__ = [
     "SmoothGradAttribution",
     "AttributionEvaluator",
     "extract_attention_weights",
+    "PatchKnockoutEvaluator",
+    "compute_auc",
+    "StatisticalSignificanceSuite",
+    "compute_bootstrap_ci",
+    "compute_paired_tests",
+    "compute_cohens_d",
+    "apply_multiple_comparisons_correction",
 ]

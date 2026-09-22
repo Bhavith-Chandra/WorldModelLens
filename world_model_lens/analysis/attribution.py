@@ -102,7 +102,12 @@ class BaseAttribution(ABC):
         ctx_latents = self.adapter.context_encoder.forward_blocks(ctx_with_pos)
 
         # Predict target
-        pred = self.adapter.predictor(ctx_latents, context_ids, [target_id])
+        if hasattr(self.adapter, "predictor"):
+            pred = self.adapter.predictor(ctx_latents, context_ids, [target_id])
+        elif hasattr(self.adapter, "decoder"):
+            pred = self.adapter.decoder(ctx_latents, context_ids, [target_id])
+        else:
+            pred = self.adapter.dynamics(ctx_latents)
 
         # Score is negative MSE
         return -F.mse_loss(pred.squeeze(1), target_gt)
@@ -111,8 +116,10 @@ class BaseAttribution(ABC):
     def _get_target_gt(self, img_tensor: torch.Tensor, target_id: int) -> torch.Tensor:
         """Get ground truth target embedding from the target encoder."""
         device = next(self.adapter.parameters()).device
-        img_tensor = img_tensor.to(device)
-        target_reps = self.adapter.target_encoder(img_tensor)
+        if hasattr(self.adapter, "target_encode"):
+            target_reps = self.adapter.target_encode(img_tensor)
+        else:
+            target_reps = self.adapter.target_encoder(img_tensor)
         return target_reps[:, [target_id], :]
 
 
@@ -138,7 +145,7 @@ class IntegratedGradientsAttribution(BaseAttribution):
         img_tensor: torch.Tensor,
         context_ids: List[int],
         target_id: int,
-        batch_size: int = 25,
+        batch_size: int = 4,
     ) -> np.ndarray:
         """Compute IG attribution using batched interpolation steps.
 
@@ -305,17 +312,23 @@ def extract_attention_weights(
         head_idx: If int, extract that head. If None, average across heads.
                   If "all", return all heads as [n_heads, n_ctx].
     """
-    device = next(wm.adapter.parameters()).device
+    adapter = wm.adapter if hasattr(wm, "adapter") else wm
+    device = next(adapter.parameters()).device
     img_tensor = img_tensor.to(device)
-    wm.adapter.last_context_ids = context_ids
-    wm.adapter.last_target_ids = [target_id]
+    adapter.last_context_ids = context_ids
+    adapter.last_target_ids = [target_id]
     
-    wm.run_with_cache(img_tensor)
+    if hasattr(wm, "run_with_cache"):
+        wm.run_with_cache(img_tensor)
+    else:
+        ctx_latents, _ = adapter.encode(img_tensor)
+        _ = adapter.dynamics(ctx_latents)
     
     # Get the specific block
-    n_blocks = len(wm.adapter.predictor.blocks)
+    blocks = adapter.predictor.blocks if hasattr(adapter, "predictor") else adapter.decoder.blocks
+    n_blocks = len(blocks)
     actual_layer = layer_idx if layer_idx >= 0 else n_blocks + layer_idx
-    attn = wm.adapter.predictor.blocks[actual_layer].attn.last_attn_weights # [1, n_heads, n_queries, n_keys]
+    attn = blocks[actual_layer].attn.last_attn_weights # [1, n_heads, n_queries, n_keys]
     
     # Target patch is always at the end of queries
     # Keys correspond to [context_patches, target_patches]

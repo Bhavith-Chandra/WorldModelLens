@@ -1,0 +1,27 @@
+{
+  "metadata": {
+    "n_samples": 5,
+    "mae_loss": "Pixel Reconstruction (RGB MSE)",
+    "ijepa_loss": "Feature Prediction (Representation MSE)"
+  },
+  "mae_metrics": {
+    "deletion_auc_ig_mean": 2.686901157466989,
+    "deletion_auc_rand_mean": 2.679514597199465,
+    "insertion_auc_ig_mean": 2.6277550902805826,
+    "insertion_auc_rand_mean": 2.6385028817779137,
+    "insertion_cohens_d": -0.4228426106733992,
+    "spearman_rho_mean": -0.3746835443037975,
+    "jaccard_overlap_mean": 0.08686868686868687,
+    "inversion_rate": 0.8
+  },
+  "ijepa_metrics": {
+    "deletion_auc_ig_mean": 1.2623229371873956,
+    "deletion_auc_rand_mean": 1.2673619798296376,
+    "insertion_auc_ig_mean": 1.3294515114081533,
+    "insertion_auc_rand_mean": 1.274820339679718,
+    "insertion_cohens_d": 0.9263263133830456,
+    "spearman_rho_mean": 0.199929676511955,
+    "jaccard_overlap_mean": 0.386044710438303,
+    "inversion_rate": 0.4
+  }
+}

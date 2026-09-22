@@ -1,0 +1,299 @@
+{
+  "metadata": {
+    "task": "Task 3: Heterogeneous Failure & Category-Conditioned Analysis",
+    "n_categories": 54,
+    "total_samples": 452
+  },
+  "continuous_correlation": {
+    "r": -0.05614224258888782,
+    "p_val": 0.6867831363374034
+  },
+  "group_summary": {
+    "inversion_failure_group": {
+      "n_samples": 42,
+      "laplacian_var_mean": 21.738841378972644,
+      "rms_contrast_mean": 1.3893397847811382,
+      "target_patch_std_mean": 1.2323594025912739,
+      "target_edge_density_mean": 0.17383381924198252
+    },
+    "alignment_group": {
+      "n_samples": 141,
+      "laplacian_var_mean": 21.760502908246735,
+      "rms_contrast_mean": 1.3937713854701808,
+      "target_patch_std_mean": 1.3104575488795625,
+      "target_edge_density_mean": 0.16891011723838473
+    }
+  },
+  "category_audit": {
+    "Airplane": {
+      "mean_rho": 0.3043151969981239,
+      "std_rho": 0.16263070108551456,
+      "n_samples": 8
+    },
+    "Apple": {
+      "mean_rho": 0.23287992495309573,
+      "std_rho": 0.20746971599139508,
+      "n_samples": 8
+    },
+    "Banana": {
+      "mean_rho": 0.20877110694183865,
+      "std_rho": 0.23299853951796887,
+      "n_samples": 8
+    },
+    "Beach": {
+      "mean_rho": 0.4462711069418387,
+      "std_rho": 0.17069111060702377,
+      "n_samples": 8
+    },
+    "Bear": {
+      "mean_rho": 0.31583020637898696,
+      "std_rho": 0.19760206133282518,
+      "n_samples": 8
+    },
+    "Bicycle": {
+      "mean_rho": 0.2893996247654785,
+      "std_rho": 0.20597160457526353,
+      "n_samples": 8
+    },
+    "Bird": {
+      "mean_rho": 0.2557926829268293,
+      "std_rho": 0.20839586582219888,
+      "n_samples": 8
+    },
+    "Boat": {
+      "mean_rho": 0.3051829268292683,
+      "std_rho": 0.25168269770266644,
+      "n_samples": 8
+    },
+    "Bridge": {
+      "mean_rho": 0.3901735459662289,
+      "std_rho": 0.24116095180568398,
+      "n_samples": 8
+    },
+    "Broccoli": {
+      "mean_rho": 0.39821763602251414,
+      "std_rho": 0.2189501270863819,
+      "n_samples": 8
+    },
+    "Burger": {
+      "mean_rho": 0.26477485928705446,
+      "std_rho": 0.21416427625023307,
+      "n_samples": 8
+    },
+    "Cake": {
+      "mean_rho": 0.3182926829268293,
+      "std_rho": 0.283497022365623,
+      "n_samples": 4
+    },
+    "Car": {
+      "mean_rho": 0.345532363977486,
+      "std_rho": 0.19854422898595925,
+      "n_samples": 16
+    },
+    "Carrot": {
+      "mean_rho": 0.34052532833020643,
+      "std_rho": 0.30654061045678793,
+      "n_samples": 8
+    },
+    "Castle": {
+      "mean_rho": 0.49298780487804883,
+      "std_rho": 0.15958466401888602,
+      "n_samples": 8
+    },
+    "Cat": {
+      "mean_rho": 0.36373123827392123,
+      "std_rho": 0.19860829850391928,
+      "n_samples": 16
+    },
+    "Cave": {
+      "mean_rho": 0.28923545966228903,
+      "std_rho": 0.2139789240521253,
+      "n_samples": 8
+    },
+    "Coffee": {
+      "mean_rho": 0.40281425891181993,
+      "std_rho": 0.10436074160633728,
+      "n_samples": 8
+    },
+    "Deer": {
+      "mean_rho": 0.5531660412757975,
+      "std_rho": 0.14243854180073823,
+      "n_samples": 8
+    },
+    "Desert": {
+      "mean_rho": 0.4992495309568481,
+      "std_rho": 0.22310341119957727,
+      "n_samples": 8
+    },
+    "Dog": {
+      "mean_rho": 0.5468222326454035,
+      "std_rho": 0.18840937346554262,
+      "n_samples": 16
+    },
+    "Elephant": {
+      "mean_rho": 0.4829737335834897,
+      "std_rho": 0.15634039929715368,
+      "n_samples": 8
+    },
+    "Flower": {
+      "mean_rho": 0.4168386491557224,
+      "std_rho": 0.20022077612918643,
+      "n_samples": 4
+    },
+    "Forest": {
+      "mean_rho": 0.4301829268292684,
+      "std_rho": 0.19615522428571705,
+      "n_samples": 8
+    },
+    "Frog": {
+      "mean_rho": 0.364469981238274,
+      "std_rho": 0.16421709006658824,
+      "n_samples": 8
+    },
+    "Giraffe": {
+      "mean_rho": 0.31862101313320834,
+      "std_rho": 0.22891673496556955,
+      "n_samples": 8
+    },
+    "Glacier": {
+      "mean_rho": 0.2656191369606004,
+      "std_rho": 0.2277070113879808,
+      "n_samples": 8
+    },
+    "Horse": {
+      "mean_rho": 0.3080440900562852,
+      "std_rho": 0.18328443031579553,
+      "n_samples": 8
+    },
+    "Hospital": {
+      "mean_rho": 0.3704268292682927,
+      "std_rho": 0.21685311033006702,
+      "n_samples": 8
+    },
+    "House": {
+      "mean_rho": 0.23119136960600378,
+      "std_rho": 0.2912113289058926,
+      "n_samples": 8
+    },
+    "Island": {
+      "mean_rho": 0.3464118198874297,
+      "std_rho": 0.1891361114144765,
+      "n_samples": 8
+    },
+    "Library": {
+      "mean_rho": 0.31632270168855536,
+      "std_rho": 0.22483778087684958,
+      "n_samples": 8
+    },
+    "Lion": {
+      "mean_rho": 0.32431988742964357,
+      "std_rho": 0.23895573473123854,
+      "n_samples": 8
+    },
+    "Monkey": {
+      "mean_rho": 0.49742026266416517,
+      "std_rho": 0.22258324539592733,
+      "n_samples": 8
+    },
+    "Mountain": {
+      "mean_rho": 0.3736163227016886,
+      "std_rho": 0.19836064897424655,
+      "n_samples": 8
+    },
+    "Museum": {
+      "mean_rho": 0.3521810506566605,
+      "std_rho": 0.16126577880845494,
+      "n_samples": 8
+    },
+    "Orange": {
+      "mean_rho": 0.3191369606003752,
+      "std_rho": 0.3287637582448691,
+      "n_samples": 8
+    },
+    "Panda": {
+      "mean_rho": 0.3861397748592871,
+      "std_rho": 0.3504748111990745,
+      "n_samples": 8
+    },
+    "Pizza": {
+      "mean_rho": 0.31343808630394,
+      "std_rho": 0.22283422073865666,
+      "n_samples": 8
+    },
+    "Rabbit": {
+      "mean_rho": 0.3905253283302064,
+      "std_rho": 0.10585500696470809,
+      "n_samples": 8
+    },
+    "River": {
+      "mean_rho": 0.41497420262664175,
+      "std_rho": 0.2375474793890042,
+      "n_samples": 16
+    },
+    "Ship": {
+      "mean_rho": 0.4078564727954973,
+      "std_rho": 0.22613950275124872,
+      "n_samples": 8
+    },
+    "Skyscraper": {
+      "mean_rho": 0.4461772983114447,
+      "std_rho": 0.17804315676188542,
+      "n_samples": 8
+    },
+    "Squirrel": {
+      "mean_rho": 0.42734521575984996,
+      "std_rho": 0.15514857768495782,
+      "n_samples": 8
+    },
+    "Stadium": {
+      "mean_rho": 0.3249530956848031,
+      "std_rho": 0.32671488198483833,
+      "n_samples": 8
+    },
+    "Tea": {
+      "mean_rho": 0.4042917448405253,
+      "std_rho": 0.14888190489217012,
+      "n_samples": 8
+    },
+    "Temple": {
+      "mean_rho": 0.33144934333958725,
+      "std_rho": 0.18645632699713843,
+      "n_samples": 8
+    },
+    "Tiger": {
+      "mean_rho": 0.26568949343339593,
+      "std_rho": 0.21545031302968032,
+      "n_samples": 8
+    },
+    "Tower": {
+      "mean_rho": 0.29774859287054417,
+      "std_rho": 0.2033751851850446,
+      "n_samples": 8
+    },
+    "Train": {
+      "mean_rho": 0.3485928705440901,
+      "std_rho": 0.1625973384242522,
+      "n_samples": 4
+    },
+    "Truck": {
+      "mean_rho": 0.19322232645403378,
+      "std_rho": 0.4071572240197564,
+      "n_samples": 8
+    },
+    "Volcano": {
+      "mean_rho": 0.21522045028142592,
+      "std_rho": 0.23655005363312717,
+      "n_samples": 8
+    },
+    "Waterfall": {
+      "mean_rho": 0.2752579737335835,
+      "std_rho": 0.27652242312776615,
+      "n_samples": 8
+    },
+    "Zebra": {
+      "mean_rho": 0.3729362101313321,
+      "std_rho": 0.21662193687719392,
+      "n_samples": 8
+    }
+  }
+}

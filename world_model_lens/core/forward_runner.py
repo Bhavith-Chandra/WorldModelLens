@@ -270,27 +270,33 @@ class ForwardRunner:
 
             target_subset = target_reps[:, t_ids, :]
 
-            # Predictor manual loop to expose predictor.layer_N
-            context_inputs = adapter.predictor.predictor_embed(context_latents)
-            context_inputs = context_inputs + adapter.predictor.pos_embed[:, c_ids, :]
+            # Manual loop to expose predictor/decoder layer_N
+            predictor_module = getattr(adapter, "predictor", getattr(adapter, "decoder", None))
+            embed_proj = getattr(predictor_module, "predictor_embed", getattr(predictor_module, "decoder_embed", None))
+
+            context_inputs = embed_proj(context_latents)
+            context_inputs = context_inputs + predictor_module.pos_embed[:, c_ids, :]
 
             B = obs_batch.shape[0] if obs_batch.dim() == 4 else 1
-            target_tokens = adapter.predictor.mask_token.expand(B, len(t_ids), -1)
-            target_inputs = target_tokens + adapter.predictor.pos_embed[:, t_ids, :]
+            target_tokens = predictor_module.mask_token.expand(B, len(t_ids), -1)
+            target_inputs = target_tokens + predictor_module.pos_embed[:, t_ids, :]
 
             x = torch.cat([context_inputs, target_inputs], dim=1)
 
-            # Manually run predictor layer loop to cache intermediate layer states
-            for i, block in enumerate(adapter.predictor.blocks):
+            # Manually run layer loop to cache intermediate layer states
+            for i, block in enumerate(predictor_module.blocks):
                 x = block(x)
                 if manager is not None:
                     manager.apply_and_cache(f"predictor.layer_{i}", 0, x, ctx, cache, names_filter)
 
-            x = adapter.predictor.norm(x)
+            x = predictor_module.norm(x)
 
-            # Predictor final projections
+            # Predictor/Decoder final projections
             target_preds = x[:, len(c_ids) :, :]
-            target_preds = adapter.predictor.predictor_project_back(target_preds)
+            if hasattr(predictor_module, "predictor_project_back"):
+                target_preds = predictor_module.predictor_project_back(target_preds)
+            elif hasattr(predictor_module, "decoder_pred"):
+                target_preds = predictor_module.decoder_pred(target_preds)
             if manager is not None:
                 manager.apply_and_cache(
                     "predictor.final", 0, target_preds, ctx, cache, names_filter
