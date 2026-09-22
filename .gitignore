@@ -148,3 +148,8 @@ outputs/
 
 # Downloaded / derived model checkpoints
 checkpoints/
+data/
+experiments/ckpt/
+
+# Cached Latent Lens sufficient statistics (regenerable; see --reanalyze)
+experiments/cache/
