@@ -148,3 +148,8 @@ outputs/
 
 # Downloaded / derived model checkpoints
 checkpoints/
+
+# Task 5 local artifacts (images, feature cache, trained checkpoints)
+data/
+experiments/cache/
+experiments/ckpt/
