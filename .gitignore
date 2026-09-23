@@ -145,3 +145,14 @@ outputs/
 *.pkl
 *.parquet
 *.pth.tar
+
+# Downloaded / derived model checkpoints
+checkpoints/
+
+# Task 5 local artifacts (images, feature cache, trained checkpoints)
+data/
+!world_model_lens/data/
+!world_model_lens/data/*.py
+.pytest-tmp/
+experiments/cache/
+experiments/ckpt/

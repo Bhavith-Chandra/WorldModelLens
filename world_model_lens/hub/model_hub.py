@@ -439,6 +439,16 @@ class ModelHub:
             f"  import torch; ckpt = torch.load(path, map_location='{device}')"
         )
 
+    @classmethod
+    def load_checkpoint(cls, path: str | Path, backend: str, device: str = "cpu") -> Any:
+        """Load a local checkpoint through the same backend loader used by the hub."""
+        checkpoint_path = str(Path(path).expanduser().resolve())
+        if backend == "ijepa":
+            return cls._load_ijepa(checkpoint_path, device=device)
+        if backend == "iris":
+            return cls._load_iris(checkpoint_path, device=device)
+        raise NotImplementedError(f"Local checkpoint loading is not wired for '{backend}'.")
+
     # ──────────────────────────────────────────────────────────────────────────
     # Push (stub)
     # ──────────────────────────────────────────────────────────────────────────
@@ -508,6 +518,32 @@ class ModelHub:
             return int(tensor.shape[0])
         return fallback
 
+    @staticmethod
+    def _remap_ijepa_encoder_state(state_dict: Dict[str, Any]) -> Dict[str, Any]:
+        """Map Meta's named MLP parameters onto the adapter's sequential MLP."""
+        return {
+            key.replace(".mlp.fc1.", ".mlp.0.").replace(".mlp.fc2.", ".mlp.2."): value
+            for key, value in state_dict.items()
+        }
+
+    @staticmethod
+    def _remap_ijepa_predictor_state(state_dict: Dict[str, Any]) -> Dict[str, Any]:
+        """Map the official predictor namespace onto ``IJEPAPredictor``."""
+        remapped: Dict[str, Any] = {}
+        for key, value in state_dict.items():
+            if key == "predictor_pos_embed":
+                key = "pos_embed"
+            elif key.startswith("predictor_blocks."):
+                key = "blocks." + key[len("predictor_blocks.") :]
+            elif key.startswith("predictor_norm."):
+                key = "norm." + key[len("predictor_norm.") :]
+            elif key.startswith("predictor_proj."):
+                key = "predictor_project_back." + key[len("predictor_proj.") :]
+            key = key.replace(".mlp.fc1.", ".mlp.0.")
+            key = key.replace(".mlp.fc2.", ".mlp.2.")
+            remapped[key] = value
+        return remapped
+
     @classmethod
     def _load_ijepa(cls, checkpoint_path: str, device: str = "cpu") -> Any:
         """Load an official Meta I-JEPA checkpoint into our IJEPAAdapter."""
@@ -526,18 +562,36 @@ class ModelHub:
             ckpt = ckpt["model"]
 
         encoder_state = ckpt.get("encoder") or ckpt.get("context_encoder")
-        target_state = ckpt.get("target_encoder") or encoder_state
+        target_state = ckpt.get("target_encoder")
         predictor_state = ckpt.get("predictor")
 
-        if encoder_state is None or predictor_state is None:
+        missing_components = [
+            name
+            for name, state in (
+                ("encoder", encoder_state),
+                ("target_encoder", target_state),
+                ("predictor", predictor_state),
+            )
+            if state is None
+        ]
+        if missing_components:
             raise RuntimeError(
-                "Unrecognised I-JEPA checkpoint layout. Expected top-level "
-                "'encoder' and 'predictor' state dicts."
+                "Official I-JEPA checkpoint is missing required components: "
+                + ", ".join(missing_components)
             )
 
         encoder_state = cls._strip_module_prefix(encoder_state)
-        target_state = cls._strip_module_prefix(target_state or {})
+        target_state = cls._strip_module_prefix(target_state)
         predictor_state = cls._strip_module_prefix(predictor_state)
+
+        predictor_depth = sum(
+            1
+            for key in predictor_state
+            if key.startswith("predictor_blocks.") and key.endswith(".norm1.weight")
+        )
+        encoder_state = cls._remap_ijepa_encoder_state(encoder_state)
+        target_state = cls._remap_ijepa_encoder_state(target_state)
+        predictor_state = cls._remap_ijepa_predictor_state(predictor_state)
 
         patch_weight = encoder_state.get("patch_embed.proj.weight")
         if not isinstance(patch_weight, torch.Tensor):
@@ -565,14 +619,12 @@ class ModelHub:
         predictor_embed_dim = (
             int(predictor_embed.shape[0]) if isinstance(predictor_embed, torch.Tensor) else 384
         )
-        predictor_depth = (
-            sum(
-                1
-                for k in predictor_state.keys()
-                if k.startswith("blocks.") and k.endswith(".norm1.weight")
-            )
-            or 4
+        predictor_depth = predictor_depth or sum(
+            1
+            for k in predictor_state
+            if k.startswith("blocks.") and k.endswith(".norm1.weight")
         )
+        predictor_depth = predictor_depth or 4
 
         cfg = WorldModelConfig(
             d_h=d_embed,
@@ -590,34 +642,41 @@ class ModelHub:
             predictor_depth=predictor_depth,
             predictor_heads=16,
         )
+        cfg.qkv_bias = True
+        cfg.norm_eps = 1e-6
 
         adapter = IJEPAAdapter(cfg)
-        encoder_missing, encoder_unexpected = adapter.context_encoder.load_state_dict(
-            encoder_state, strict=False
-        )
-        target_missing, target_unexpected = adapter.target_encoder.load_state_dict(
-            target_state, strict=False
-        )
-        predictor_missing, predictor_unexpected = adapter.predictor.load_state_dict(
-            predictor_state, strict=False
-        )
+        try:
+            adapter.context_encoder.load_state_dict(encoder_state, strict=True)
+            adapter.target_encoder.load_state_dict(target_state, strict=True)
+            adapter.predictor.load_state_dict(predictor_state, strict=True)
+        except RuntimeError as exc:
+            raise RuntimeError(
+                "Official I-JEPA checkpoint did not load exactly; refusing to run with "
+                "missing or randomly initialized pretrained parameters."
+            ) from exc
 
-        if (
-            encoder_missing
-            or encoder_unexpected
-            or target_missing
-            or target_unexpected
-            or predictor_missing
-            or predictor_unexpected
-        ):
-            warnings.warn(
-                "I-JEPA checkpoint loaded with partial key mismatches; "
-                "the adapter is usable but some weights were not matched exactly.",
-                UserWarning,
-                stacklevel=2,
-            )
-
-        adapter = adapter.to(torch.device(device))
+        adapter.checkpoint_coverage = {
+            "context_encoder": {
+                "checkpoint_tensors": len(encoder_state),
+                "model_tensors": len(adapter.context_encoder.state_dict()),
+                "missing": [],
+                "unexpected": [],
+            },
+            "target_encoder": {
+                "checkpoint_tensors": len(target_state),
+                "model_tensors": len(adapter.target_encoder.state_dict()),
+                "missing": [],
+                "unexpected": [],
+            },
+            "predictor": {
+                "checkpoint_tensors": len(predictor_state),
+                "model_tensors": len(adapter.predictor.state_dict()),
+                "missing": [],
+                "unexpected": [],
+            },
+        }
+        adapter = adapter.to(device=torch.device(device))
         adapter.eval()
         return adapter
 
