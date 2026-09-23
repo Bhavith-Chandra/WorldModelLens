@@ -88,13 +88,22 @@ class Attention(nn.Module):
 
 
 class Block(nn.Module):
-    def __init__(self, dim, num_heads, mlp_ratio=4.0, qkv_bias=False, drop=0.0, attn_drop=0.0):
+    def __init__(
+        self,
+        dim,
+        num_heads,
+        mlp_ratio=4.0,
+        qkv_bias=False,
+        drop=0.0,
+        attn_drop=0.0,
+        norm_eps=1e-5,
+    ):
         super().__init__()
-        self.norm1 = nn.LayerNorm(dim)
+        self.norm1 = nn.LayerNorm(dim, eps=norm_eps)
         self.attn = Attention(
             dim, num_heads=num_heads, qkv_bias=qkv_bias, attn_drop=attn_drop, proj_drop=drop
         )
-        self.norm2 = nn.LayerNorm(dim)
+        self.norm2 = nn.LayerNorm(dim, eps=norm_eps)
         mlp_hidden_dim = int(dim * mlp_ratio)
         self.mlp = nn.Sequential(
             nn.Linear(dim, mlp_hidden_dim),
@@ -124,7 +133,15 @@ class Block(nn.Module):
 
 class VisionTransformer(nn.Module):
     def __init__(
-        self, img_size=224, patch_size=16, in_chans=3, embed_dim=192, depth=6, num_heads=3
+        self,
+        img_size=224,
+        patch_size=16,
+        in_chans=3,
+        embed_dim=192,
+        depth=6,
+        num_heads=3,
+        qkv_bias=False,
+        norm_eps=1e-5,
     ):
         super().__init__()
         self.prefix = ""
@@ -135,9 +152,17 @@ class VisionTransformer(nn.Module):
         self.pos_drop = nn.Dropout(p=0.0)
 
         self.blocks = nn.ModuleList(
-            [Block(dim=embed_dim, num_heads=num_heads) for _ in range(depth)]
+            [
+                Block(
+                    dim=embed_dim,
+                    num_heads=num_heads,
+                    qkv_bias=qkv_bias,
+                    norm_eps=norm_eps,
+                )
+                for _ in range(depth)
+            ]
         )
-        self.norm = nn.LayerNorm(embed_dim)
+        self.norm = nn.LayerNorm(embed_dim, eps=norm_eps)
 
         self.hook_resid_pre = nn.Identity()
 
@@ -210,7 +235,14 @@ class IJEPAPredictor(HookedRootModule):
     """Predictor transformer that maps context embeddings to target embeddings."""
 
     def __init__(
-        self, encoder_embed_dim=192, predictor_embed_dim=384, depth=4, num_heads=6, num_patches=196
+        self,
+        encoder_embed_dim=192,
+        predictor_embed_dim=384,
+        depth=4,
+        num_heads=6,
+        num_patches=196,
+        qkv_bias=False,
+        norm_eps=1e-5,
     ):
         super().__init__()
         self.prefix = ""
@@ -224,9 +256,17 @@ class IJEPAPredictor(HookedRootModule):
         self.pos_embed = nn.Parameter(torch.zeros(1, num_patches, predictor_embed_dim))
 
         self.blocks: nn.ModuleList = nn.ModuleList(
-            [Block(dim=predictor_embed_dim, num_heads=num_heads) for _ in range(depth)]
+            [
+                Block(
+                    dim=predictor_embed_dim,
+                    num_heads=num_heads,
+                    qkv_bias=qkv_bias,
+                    norm_eps=norm_eps,
+                )
+                for _ in range(depth)
+            ]
         )
-        self.norm = nn.LayerNorm(predictor_embed_dim)
+        self.norm = nn.LayerNorm(predictor_embed_dim, eps=norm_eps)
 
         self.hook_resid_pre = nn.Identity()
 
@@ -300,6 +340,8 @@ class IJEPAAdapter(BaseModelAdapter, HookedRootModule):
         predictor_embed_dim = getattr(config, "predictor_embed_dim", 384)
         predictor_depth = getattr(config, "predictor_depth", 4)
         predictor_heads = getattr(config, "predictor_heads", 6)
+        qkv_bias = getattr(config, "qkv_bias", False)
+        norm_eps = getattr(config, "norm_eps", 1e-5)
         num_patches = (img_size // patch_size) ** 2
 
         # Context Encoder (Trainable)
@@ -309,6 +351,8 @@ class IJEPAAdapter(BaseModelAdapter, HookedRootModule):
             embed_dim=embed_dim,
             depth=depth,
             num_heads=num_heads,
+            qkv_bias=qkv_bias,
+            norm_eps=norm_eps,
         )
 
         # Target Encoder (EMA updated)
@@ -323,6 +367,8 @@ class IJEPAAdapter(BaseModelAdapter, HookedRootModule):
             depth=predictor_depth,
             num_heads=predictor_heads,
             num_patches=num_patches,
+            qkv_bias=qkv_bias,
+            norm_eps=norm_eps,
         )
 
         self._capabilities = WorldModelCapabilities(
