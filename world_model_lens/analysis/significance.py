@@ -171,11 +171,24 @@ class StatisticalSignificanceSuite:
 
         raw_p_values = [
             del_ig_vs_attn["p_val_ttest"],
+            del_ig_vs_attn["p_val_wilcoxon"],
             del_ig_vs_rand["p_val_ttest"],
+            del_ig_vs_rand["p_val_wilcoxon"],
             ins_ig_vs_attn["p_val_ttest"],
-            ins_ig_vs_rand["p_val_ttest"]
+            ins_ig_vs_attn["p_val_wilcoxon"],
+            ins_ig_vs_rand["p_val_ttest"],
+            ins_ig_vs_rand["p_val_wilcoxon"],
         ]
         corrections = apply_multiple_comparisons_correction(raw_p_values, self.alpha)
+
+        def corrected(result: Dict[str, Any], offset: int) -> Dict[str, Any]:
+            return {
+                **result,
+                "p_fdr": corrections["p_fdr"][offset],
+                "p_bonferroni": corrections["p_bonferroni"][offset],
+                "p_fdr_wilcoxon": corrections["p_fdr"][offset + 1],
+                "p_bonferroni_wilcoxon": corrections["p_bonferroni"][offset + 1],
+            }
 
         return {
             "n_samples": n_samples,
@@ -184,15 +197,15 @@ class StatisticalSignificanceSuite:
                 "ig_auc": {"mean": ig_del_ci[0], "ci_95": [ig_del_ci[1], ig_del_ci[2]]},
                 "attn_auc": {"mean": attn_del_ci[0], "ci_95": [attn_del_ci[1], attn_del_ci[2]]},
                 "random_auc": {"mean": rand_del_ci[0], "ci_95": [rand_del_ci[1], rand_del_ci[2]]},
-                "ig_vs_attn": {**del_ig_vs_attn, "p_fdr": corrections["p_fdr"][0], "p_bonferroni": corrections["p_bonferroni"][0]},
-                "ig_vs_rand": {**del_ig_vs_rand, "p_fdr": corrections["p_fdr"][1], "p_bonferroni": corrections["p_bonferroni"][1]}
+                "ig_vs_attn": corrected(del_ig_vs_attn, 0),
+                "ig_vs_rand": corrected(del_ig_vs_rand, 2),
             },
             "insertion_auc": {
                 "ig_auc": {"mean": ig_ins_ci[0], "ci_95": [ig_ins_ci[1], ig_ins_ci[2]]},
                 "attn_auc": {"mean": attn_ins_ci[0], "ci_95": [attn_ins_ci[1], attn_ins_ci[2]]},
                 "random_auc": {"mean": rand_ins_ci[0], "ci_95": [rand_ins_ci[1], rand_ins_ci[2]]},
-                "ig_vs_attn": {**ins_ig_vs_attn, "p_fdr": corrections["p_fdr"][2], "p_bonferroni": corrections["p_bonferroni"][2]},
-                "ig_vs_rand": {**ins_ig_vs_rand, "p_fdr": corrections["p_fdr"][3], "p_bonferroni": corrections["p_bonferroni"][3]}
+                "ig_vs_attn": corrected(ins_ig_vs_attn, 4),
+                "ig_vs_rand": corrected(ins_ig_vs_rand, 6),
             }
         }
 

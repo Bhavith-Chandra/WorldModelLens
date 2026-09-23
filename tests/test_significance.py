@@ -80,6 +80,8 @@ def test_statistical_significance_suite():
     assert "insertion_auc" in report
     assert "p_fdr" in report["deletion_auc"]["ig_vs_rand"]
     assert "p_bonferroni" in report["deletion_auc"]["ig_vs_rand"]
+    assert "p_fdr_wilcoxon" in report["deletion_auc"]["ig_vs_rand"]
+    assert "p_bonferroni_wilcoxon" in report["insertion_auc"]["ig_vs_attn"]
 
 
 def test_statistical_significance_suite_aaf():

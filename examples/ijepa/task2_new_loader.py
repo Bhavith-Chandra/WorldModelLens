@@ -1,7 +1,11 @@
-"""Task 2 Entry Point: Statistical Significance Package Execution
+"""Task 2 companion for the new-loader Task 1/3 evaluation pipeline.
 
 Computes 1,000-resample non-parametric bootstrap CIs, paired t-tests, Wilcoxon tests,
 Cohen's d effect sizes, and Benjamini-Hochberg / Bonferroni multiple-comparisons adjustments.
+
+Task 2 consumes Task 1's JSON and therefore requires neither ModelHub nor an
+ImageNet loader. Its complete statistical experiment is preserved here so the
+new-loader pipeline has three standalone entry points.
 """
 
 import os
@@ -19,14 +23,14 @@ from world_model_lens.analysis.significance import StatisticalSignificanceSuite
 def main():
     parser = argparse.ArgumentParser(description="Task 2: Statistical Significance Package Execution")
     parser.add_argument(
-        "--task1_json", 
-        type=str, 
+        "--task1_json",
+        type=str,
         default="task1_deletion_insertion_results.json",
         help="Path to Task 1 output JSON results file."
     )
     parser.add_argument(
-        "--output_json", 
-        type=str, 
+        "--output_json",
+        type=str,
         default="task2_significance_report.json",
         help="Path to save Task 2 statistical significance report."
     )

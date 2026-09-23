@@ -46,6 +46,7 @@ coverage.xml
 *.py,cover
 .hypothesis/
 .pytest_cache/
+.pytest-tmp/
 
 # Translations
 *.mo
@@ -145,3 +146,6 @@ outputs/
 *.pkl
 *.parquet
 *.pth.tar
+data/
+!world_model_lens/data/
+!world_model_lens/data/*.py

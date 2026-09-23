@@ -1,7 +1,10 @@
-"""Task 1 Evaluation Entry Point: Random Patch Knockout & Deletion/Insertion AUC Curves
+"""Task 1 with the strict ModelHub loader and shared ImageNet data pipeline.
 
 Evaluates Integrated Gradients (IG) vs Cross-Attention Weights vs Random Patch Baseline (M=20 seeds)
 across patch counts K in {1, 3, 5, 10, 20} with 95% bootstrap confidence intervals and paired statistical tests.
+
+This is a complete copy of the Task 1 experiment. Only checkpoint and image
+loading differ from the original entry point.
 """
 
 import os
@@ -17,12 +20,10 @@ import gc
 sys.path.insert(0, os.path.abspath("."))
 
 from world_model_lens import HookedWorldModel
-from world_model_lens.backends.ijepa_adapter import IJEPAAdapter
-from world_model_lens.core.config import WorldModelConfig
-from world_model_lens.core.types import WorldModelFamily
 from world_model_lens.analysis.attribution import IntegratedGradientsAttribution
 from world_model_lens.analysis.ablation_knockout import PatchKnockoutEvaluator, compute_bootstrap_ci
 from world_model_lens.data import load_imagenet_image, load_imagenet_subset
+from world_model_lens.hub.model_hub import ModelHub
 
 
 def cleanup_memory():
@@ -51,10 +52,10 @@ def sample_context_and_target(
 def main():
     parser = argparse.ArgumentParser(description="Evaluate Task 1: Deletion and Insertion AUC curves for I-JEPA.")
     parser.add_argument(
-        "--weights", 
-        type=str, 
-        default="ijepa_mini.pth",
-        help="Path to weights file, or 'meta' to use official Meta ViT-H weights."
+        "--weights",
+        type=str,
+        default="meta",
+        help="Path to the official checkpoint, or 'meta' for vith14_in1k_ep300.pth.tar."
     )
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument(
@@ -92,33 +93,24 @@ def main():
     print("TASK 1: Random Patch Knockout & Deletion/Insertion AUC Evaluation")
     print("=" * 70)
 
-    # 1. Setup Model Architecture and Weights
-    if args.weights == "meta" or "vith" in args.weights.lower():
-        print("[Model] Loading Meta ViT-H/14 architecture...")
-        config = WorldModelConfig(
-            backend="ijepa", patch_size=14, d_embed=1280, n_layers=32, n_heads=16,
-            predictor_embed_dim=384, predictor_depth=12, predictor_heads=12,
-            world_model_family=WorldModelFamily.JEPA
-        )
-        weights_path = "vith14_in1k_ep300.pth.tar" if args.weights == "meta" else args.weights
-    else:
-        print("[Model] Loading mini architecture...")
-        config = WorldModelConfig(
-            backend="ijepa", d_embed=192, n_layers=6, n_heads=3, predictor_embed_dim=384,
-            world_model_family=WorldModelFamily.JEPA
-        )
-        weights_path = os.path.join(os.path.dirname(__file__), args.weights)
-
-    if os.path.exists(weights_path):
-        print(f"[Model] Loading weights via IJEPAAdapter.from_checkpoint from {weights_path}")
-        adapter = IJEPAAdapter.from_checkpoint(weights_path, config)
-    else:
-        print(f"[Warning] Weights file not found at {weights_path}. Using random initialization.")
-        adapter = IJEPAAdapter(config)
-
-    adapter.to(device=args.device)
+    # 1. Load all three official checkpoint components through ModelHub. The
+    # strict loader refuses missing target/predictor tensors instead of silently
+    # substituting or leaving pretrained parameters randomly initialized.
+    weights_path = "vith14_in1k_ep300.pth.tar" if args.weights == "meta" else args.weights
+    if not Path(weights_path).is_file():
+        raise FileNotFoundError(f"I-JEPA checkpoint not found: {weights_path}")
+    print(f"[Model] Strict ModelHub load from {weights_path}")
+    adapter = ModelHub.load_checkpoint(weights_path, backend="ijepa", device=args.device)
     adapter.eval()
-    wm = HookedWorldModel(adapter, config)
+    coverage = getattr(adapter, "checkpoint_coverage", {})
+    print(
+        "[Model] Loaded context encoder, EMA target encoder, and predictor: "
+        + ", ".join(
+            f"{name}={row['checkpoint_tensors']}/{row['model_tensors']}"
+            for name, row in coverage.items()
+        )
+    )
+    wm = HookedWorldModel(adapter, adapter.config)
 
     # 2. Build the same balanced deterministic ImageNet subset used by Tasks 4/7.
     print(
@@ -223,7 +215,7 @@ def main():
     for i, item in enumerate(dataset):
         img_t, context_ids, target_id, cat = item[0], item[1], item[2], item[3]
         attr_scores = cached_attributions[i]
-        
+
         res = evaluator.evaluate_sample(
             wm, img_t, context_ids, target_id, attr_scores, layer_idx=layer_idx, seed=42 + i
         )
@@ -241,6 +233,9 @@ def main():
     output_contract = {
         "metadata": {
             "weights": args.weights,
+            "checkpoint_path": str(Path(weights_path).resolve()),
+            "loader": "ModelHub.load_checkpoint",
+            "checkpoint_coverage": coverage,
             "n_samples": len(dataset),
             "imagenet_subset_size": args.subset_size,
             "imagenet_num_classes": args.n_classes,
