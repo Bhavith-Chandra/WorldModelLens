@@ -7,6 +7,25 @@ import torch
 
 from world_model_lens.backends import VJEPAAdapter
 from world_model_lens.hub import ModelHub
+from world_model_lens.core.config import WorldModelConfig
+
+
+def test_vjepa_vitl16_defaults_match_meta_config():
+    config = WorldModelConfig.vjepa_vitl16()
+    assert (config.img_size, config.patch_size, config.num_frames, config.tubelet_size) == (224, 16, 16, 2)
+    assert (config.d_embed, config.n_layers, config.n_heads) == (1024, 24, 16)
+    assert (config.predictor_embed_dim, config.predictor_depth, config.predictor_heads) == (384, 12, 16)
+
+
+def test_adapter_default_builds_vitl16_architecture_without_allocating_weights():
+    with torch.device("meta"):
+        adapter = VJEPAAdapter()
+    assert len(adapter.context_encoder.blocks) == 24
+    assert adapter.context_encoder.blocks[0].attn.num_heads == 16
+    assert adapter.context_encoder.blocks[0].attn.qkv.bias is not None
+    assert adapter.context_encoder.blocks[0].norm1.eps == 1e-6
+    assert len(adapter.predictor.blocks) == 12
+    assert adapter.predictor.blocks[0].attn.num_heads == 16
 
 
 def test_official_vjepa_checkpoint_is_registered_for_download():

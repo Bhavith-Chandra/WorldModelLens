@@ -63,7 +63,7 @@ class TubeletEmbed(nn.Module):
 class Attention3D(nn.Module):
     """3D Spatiotemporal Attention Module with Hook Registration."""
 
-    def __init__(self, dim: int, num_heads: int = 8, qkv_bias: bool = False, attn_drop: float = 0.0, proj_drop: float = 0.0):
+    def __init__(self, dim: int, num_heads: int = 8, qkv_bias: bool = True, attn_drop: float = 0.0, proj_drop: float = 0.0):
         super().__init__()
         self.num_heads = num_heads
         head_dim = dim // num_heads
@@ -111,11 +111,11 @@ class Attention3D(nn.Module):
 class Block3D(nn.Module):
     """3D Spatiotemporal Transformer Block with Activation Hooks."""
 
-    def __init__(self, dim: int, num_heads: int, mlp_ratio: float = 4.0, qkv_bias: bool = False, drop: float = 0.0, attn_drop: float = 0.0):
+    def __init__(self, dim: int, num_heads: int, mlp_ratio: float = 4.0, qkv_bias: bool = True, drop: float = 0.0, attn_drop: float = 0.0):
         super().__init__()
-        self.norm1 = nn.LayerNorm(dim)
+        self.norm1 = nn.LayerNorm(dim, eps=1e-6)
         self.attn = Attention3D(dim, num_heads=num_heads, qkv_bias=qkv_bias, attn_drop=attn_drop, proj_drop=drop)
-        self.norm2 = nn.LayerNorm(dim)
+        self.norm2 = nn.LayerNorm(dim, eps=1e-6)
         mlp_hidden_dim = int(dim * mlp_ratio)
         self.mlp = nn.Sequential(
             nn.Linear(dim, mlp_hidden_dim),
@@ -153,9 +153,9 @@ class VJEPAEncoder(nn.Module):
         num_frames: int = 16,
         tubelet_size: int = 2,
         in_chans: int = 3,
-        embed_dim: int = 768,
-        depth: int = 12,
-        num_heads: int = 12
+        embed_dim: int = 1024,
+        depth: int = 24,
+        num_heads: int = 16
     ):
         super().__init__()
         self.patch_embed = TubeletEmbed(img_size, patch_size, num_frames, tubelet_size, in_chans, embed_dim)
@@ -163,7 +163,7 @@ class VJEPAEncoder(nn.Module):
 
         self.pos_embed = nn.Parameter(torch.zeros(1, num_patches, embed_dim))
         self.blocks = nn.ModuleList([Block3D(dim=embed_dim, num_heads=num_heads) for _ in range(depth)])
-        self.norm = nn.LayerNorm(embed_dim)
+        self.norm = nn.LayerNorm(embed_dim, eps=1e-6)
         self.hook_resid_pre = nn.Identity()
 
         nn.init.trunc_normal_(self.pos_embed, std=0.02)
@@ -200,10 +200,10 @@ class VJEPAPredictor(HookedRootModule):
 
     def __init__(
         self,
-        encoder_embed_dim: int = 768,
+        encoder_embed_dim: int = 1024,
         predictor_embed_dim: int = 384,
-        depth: int = 6,
-        num_heads: int = 6,
+        depth: int = 12,
+        num_heads: int = 16,
         num_patches: int = 1568
     ):
         super().__init__()
@@ -254,7 +254,9 @@ class VJEPAPredictor(HookedRootModule):
 class VJEPAAdapter(BaseModelAdapter, HookedRootModule):
     """Hookable V-JEPA-style model; not checkpoint-compatible with Meta V-JEPA v1."""
 
-    def __init__(self, config: WorldModelConfig):
+    def __init__(self, config: Optional[WorldModelConfig] = None):
+        if config is None:
+            config = WorldModelConfig.vjepa_vitl16()
         BaseModelAdapter.__init__(self, config)
         HookedRootModule.__init__(self)
         self.config = config
@@ -263,13 +265,13 @@ class VJEPAAdapter(BaseModelAdapter, HookedRootModule):
         patch_size = getattr(config, "patch_size", 16)
         num_frames = getattr(config, "num_frames", 16)
         tubelet_size = getattr(config, "tubelet_size", 2)
-        embed_dim = getattr(config, "d_embed", 768)
-        depth = getattr(config, "n_layers", 12)
-        num_heads = getattr(config, "n_heads", 12)
+        embed_dim = config.d_embed
+        depth = config.n_layers
+        num_heads = config.n_heads
 
         predictor_embed_dim = getattr(config, "predictor_embed_dim", 384)
-        predictor_depth = getattr(config, "predictor_depth", 6)
-        predictor_num_heads = getattr(config, "predictor_num_heads", 6)
+        predictor_depth = config.predictor_depth
+        predictor_num_heads = config.predictor_heads
 
         grid_t = num_frames // tubelet_size
         grid_h = img_size // patch_size
@@ -352,7 +354,7 @@ class VJEPAAdapter(BaseModelAdapter, HookedRootModule):
             )
 
         if config is None:
-            config = WorldModelConfig(backend="vjepa")
+            config = WorldModelConfig.vjepa_vitl16()
 
         if "encoder" in sd:
             enc_sd = sd["encoder"]

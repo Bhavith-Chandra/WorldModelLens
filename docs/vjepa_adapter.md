@@ -1,9 +1,13 @@
 # V-JEPA adapter status
 
 `VJEPAAdapter` is the hookable video transformer copied from
-`feat/mae-comparison`. It can run its own small checkpoints and expose
+`feat/mae-comparison`. It can run small configurations and expose
 activations, but it is **not yet a faithful port of Meta's pretrained V-JEPA
 v1 model**.
+
+For Meta's ViT-L architecture defaults, construct `VJEPAAdapter()` or pass
+`WorldModelConfig.vjepa_vitl16()`. A plain `WorldModelConfig(backend="vjepa")`
+retains the shared config's generic transformer values.
 
 ## Official checkpoint
 
@@ -25,10 +29,12 @@ checkpoints do not apply here.
 
 ## Compatibility gaps
 
-1. **Encoder size and operations.** The adapter defaults to 768 channels,
-   12 blocks and 12 heads. Meta's ViT-L/16 uses 1024 channels, 24 blocks and
-   16 heads, with biased QKV projections and LayerNorm epsilon `1e-6`.
-   Passing only the current default config cannot load the official weights.
+1. **Architecture defaults.** `WorldModelConfig.vjepa_vitl16()` and
+   `VJEPAAdapter()` now use Meta's ViT-L/16 sizes: 1024 channels, 24 encoder
+   blocks, 16 encoder heads, 384 predictor channels and 12 predictor blocks
+   with 16 heads. Tubelet, crop and patch sizes also match. Encoder QKV bias
+   and LayerNorm epsilon match Meta's ViT-L builder. These defaults do not
+   establish checkpoint compatibility by themselves.
 2. **Position embeddings.** Meta uses fixed 3D sine/cosine embeddings for the
    encoder and predictor. The adapter initializes trainable position
    embeddings at random. Even if checkpoint keys and tensor shapes were
@@ -52,5 +58,7 @@ Meta's positional embeddings and predictor masks, load strictly, and compare
 outputs with the reference implementation on the same preprocessed video.
 
 Sources: [Meta V-JEPA README](https://github.com/facebookresearch/jepa/blob/main/README.md),
+[ViT-L pretraining config](https://github.com/facebookresearch/jepa/blob/main/configs/pretrain/vitl16.yaml),
+[model builder](https://github.com/facebookresearch/jepa/blob/main/app/vjepa/utils.py),
 [encoder](https://github.com/facebookresearch/jepa/blob/main/src/models/vision_transformer.py),
 [predictor](https://github.com/facebookresearch/jepa/blob/main/src/models/predictor.py).
