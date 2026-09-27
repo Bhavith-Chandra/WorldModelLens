@@ -199,6 +199,19 @@ class ModelHub:
                 "pickle even though it uses a .pth.tar suffix."
             ),
         ),
+        "vjepa-vit-l-224": ModelInfo(
+            name="vjepa-vit-l-224",
+            backend="vjepa",
+            environment="VideoMix2M",
+            description="Meta V-JEPA v1 ViT-L/16 pretrained on VideoMix2M at 224px.",
+            coming_soon=False,
+            source_url="https://dl.fbaipublicfiles.com/jepa/vitl16/vitl16.pth.tar",
+            hf_filename="vjepa_vitl16.pth.tar",
+            notes=(
+                "Official Meta V-JEPA v1 checkpoint. load() maps the encoder, "
+                "EMA target encoder and predictor into VJEPAAdapter."
+            ),
+        ),
         "dreamerv3-atari-breakout": ModelInfo(
             name="dreamerv3-atari-breakout",
             backend="dreamerv3",
@@ -431,6 +444,13 @@ class ModelHub:
             return adapter
         if model_info.backend == "ijepa":
             return cls._load_ijepa(local_path, device=device)
+        if model_info.backend == "vjepa":
+            from world_model_lens.backends.vjepa_adapter import VJEPAAdapter
+
+            adapter = VJEPAAdapter.from_checkpoint(local_path)
+            adapter = adapter.to(device=torch.device(device))
+            adapter.eval()
+            return adapter
 
         raise NotImplementedError(
             f"Adapter loading for backend '{model_info.backend}' is not yet wired up.\n"

@@ -76,6 +76,7 @@ class WorldModelConfig:
         "robotics",
         "contrastive_predictive",
         "ijepa",
+        "vjepa",
     ] = "dreamerv3"
     n_gru_layers: int = 1
     reward_head: Literal["twohot", "gaussian", "categorical"] = "twohot"
@@ -118,6 +119,31 @@ class WorldModelConfig:
     predictor_embed_dim: int = 384
     predictor_depth: int = 4
     predictor_heads: int = 6
+    num_frames: int = 16
+    tubelet_size: int = 2
+
+    @classmethod
+    def vjepa_vitl16(cls) -> "WorldModelConfig":
+        """Meta V-JEPA v1 ViT-L/16 224px pretraining architecture defaults.
+
+        See facebookresearch/jepa/configs/pretrain/vitl16.yaml and
+        src/models/vision_transformer.py in the official repository.
+        """
+        return cls(
+            backend="vjepa",
+            world_model_family=WorldModelFamily.JEPA,
+            encoder_type="vit",
+            img_size=224,
+            patch_size=16,
+            num_frames=16,
+            tubelet_size=2,
+            d_embed=1024,
+            n_layers=24,
+            n_heads=16,
+            predictor_embed_dim=384,
+            predictor_depth=12,
+            predictor_heads=16,
+        )
 
     @property
     def d_z(self) -> int:
