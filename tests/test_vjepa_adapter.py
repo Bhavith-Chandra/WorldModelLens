@@ -68,3 +68,19 @@ def test_vjepa_adapter_forward_and_hooks():
         assert captured_acts["hook_resid_post"].shape == (1, 250, 384) # [B=1, N_ctx + N_tgt, D_pred]
     finally:
         adapter.remove_hook("predictor.blocks.0.hook_resid_post")
+
+
+def test_default_encode_then_dynamics_uses_context_half():
+    config = WorldModelConfig(
+        backend="vjepa", img_size=32, patch_size=16, num_frames=2,
+        tubelet_size=2, d_embed=12, n_layers=1, n_heads=3,
+        predictor_embed_dim=12, predictor_depth=1, predictor_heads=3,
+    )
+    adapter = VJEPAAdapter(config).eval()
+
+    with torch.no_grad():
+        latents, _ = adapter.encode(torch.randn(1, 3, 2, 32, 32))
+        predictions = adapter.dynamics(latents)
+
+    assert latents.shape == (1, 4, 12)
+    assert predictions.shape == (1, 2, 12)

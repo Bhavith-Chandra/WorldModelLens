@@ -328,13 +328,25 @@ class VJEPAAdapter(BaseModelAdapter, HookedRootModule):
             return self.target_encoder(obs)
 
     def dynamics(self, state: torch.Tensor, action: Optional[torch.Tensor] = None) -> torch.Tensor:
+        n_patches = self.context_encoder.patch_embed.n_patches
         if self.last_context_ids is None or self.last_target_ids is None:
-            n_patches = self.context_encoder.patch_embed.n_patches
             ctx_ids = list(range(int(n_patches * 0.5)))
             tgt_ids = list(range(int(n_patches * 0.5), n_patches))
         else:
             ctx_ids = self.last_context_ids
             tgt_ids = self.last_target_ids
+
+        if state.ndim != 3:
+            raise ValueError(f"Expected context latents [B, N, D], got shape {tuple(state.shape)}")
+        if state.shape[1] == n_patches:
+            # encode() returns every token when no context mask was supplied.
+            # Select the context tokens before passing them to the predictor.
+            state = state[:, ctx_ids, :]
+        elif state.shape[1] != len(ctx_ids):
+            raise ValueError(
+                f"Expected {len(ctx_ids)} context tokens or {n_patches} full tokens, "
+                f"got {state.shape[1]}"
+            )
 
         self.predictor.hooks = self.hooks
         self.predictor.current_timestep = self.current_timestep

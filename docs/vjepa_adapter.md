@@ -9,6 +9,10 @@ For Meta's ViT-L architecture defaults, construct `VJEPAAdapter()` or pass
 `WorldModelConfig.vjepa_vitl16()`. A plain `WorldModelConfig(backend="vjepa")`
 retains the shared config's generic transformer values.
 
+Without explicit mask IDs, `encode()` returns all patch tokens and
+`dynamics()` uses the first half as context for a runnable smoke path. This
+deterministic split is an adapter fallback, not Meta's V-JEPA mask sampling.
+
 ## Official checkpoint
 
 Meta publishes the [V-JEPA v1 model zoo](https://github.com/facebookresearch/jepa#model-zoo),
