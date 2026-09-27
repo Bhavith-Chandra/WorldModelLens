@@ -208,8 +208,8 @@ class ModelHub:
             source_url="https://dl.fbaipublicfiles.com/jepa/vitl16/vitl16.pth.tar",
             hf_filename="vjepa_vitl16.pth.tar",
             notes=(
-                "Official Meta checkpoint. pull() downloads it; the current VJEPAAdapter "
-                "cannot load it faithfully. See docs/vjepa_adapter.md."
+                "Official Meta V-JEPA v1 checkpoint. load() maps the encoder, "
+                "EMA target encoder and predictor into VJEPAAdapter."
             ),
         ),
         "dreamerv3-atari-breakout": ModelInfo(
@@ -433,12 +433,6 @@ class ModelHub:
             RuntimeError: Download or loading failed.
         """
         model_info = cls.info(name)
-        if model_info.backend == "vjepa":
-            raise NotImplementedError(
-                "The official Meta V-JEPA checkpoint is available through ModelHub.pull(), "
-                "but VJEPAAdapter does not yet implement a faithful checkpoint load. "
-                "See docs/vjepa_adapter.md."
-            )
         local_path = cls.pull(name, cache_dir=cache_dir, force=force_download)
 
         if model_info.backend == "iris":
@@ -450,6 +444,13 @@ class ModelHub:
             return adapter
         if model_info.backend == "ijepa":
             return cls._load_ijepa(local_path, device=device)
+        if model_info.backend == "vjepa":
+            from world_model_lens.backends.vjepa_adapter import VJEPAAdapter
+
+            adapter = VJEPAAdapter.from_checkpoint(local_path)
+            adapter = adapter.to(device=torch.device(device))
+            adapter.eval()
+            return adapter
 
         raise NotImplementedError(
             f"Adapter loading for backend '{model_info.backend}' is not yet wired up.\n"

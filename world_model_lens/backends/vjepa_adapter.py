@@ -161,7 +161,7 @@ class VJEPAEncoder(nn.Module):
         self.patch_embed = TubeletEmbed(img_size, patch_size, num_frames, tubelet_size, in_chans, embed_dim)
         num_patches = self.patch_embed.n_patches
 
-        self.pos_embed = nn.Parameter(torch.zeros(1, num_patches, embed_dim))
+        self.pos_embed = nn.Parameter(torch.zeros(1, num_patches, embed_dim), requires_grad=False)
         self.blocks = nn.ModuleList([Block3D(dim=embed_dim, num_heads=num_heads) for _ in range(depth)])
         self.norm = nn.LayerNorm(embed_dim, eps=1e-6)
         self.hook_resid_pre = nn.Identity()
@@ -212,25 +212,48 @@ class VJEPAPredictor(HookedRootModule):
         self.predictor_embed_dim = predictor_embed_dim
 
         self.predictor_embed = nn.Linear(encoder_embed_dim, predictor_embed_dim)
-        self.mask_token = nn.Parameter(torch.zeros(1, 1, predictor_embed_dim))
-        self.pos_embed = nn.Parameter(torch.zeros(1, num_patches, predictor_embed_dim))
+        # Meta's V-JEPA checkpoint stores one token for each mask configuration.
+        self.mask_tokens = nn.ParameterList(
+            [nn.Parameter(torch.zeros(1, 1, predictor_embed_dim)) for _ in range(2)]
+        )
+        self.pos_embed = nn.Parameter(
+            torch.zeros(1, num_patches, predictor_embed_dim), requires_grad=False
+        )
 
         self.blocks: nn.ModuleList = nn.ModuleList(
             [Block3D(dim=predictor_embed_dim, num_heads=num_heads) for _ in range(depth)]
         )
-        self.norm = nn.LayerNorm(predictor_embed_dim)
+        self.norm = nn.LayerNorm(predictor_embed_dim, eps=1e-6)
         self.hook_resid_pre = nn.Identity()
         self.predictor_project_back = nn.Linear(predictor_embed_dim, encoder_embed_dim)
 
-        nn.init.trunc_normal_(self.mask_token, std=0.02)
-        nn.init.trunc_normal_(self.pos_embed, std=0.02)
+        # The official zero-initialized mask tokens and fixed positional values
+        # are supplied by the checkpoint when loading pretrained weights.
 
-    def forward(self, context_latents: torch.Tensor, context_ids: List[int], target_ids: List[int]) -> torch.Tensor:
+    def forward(
+        self, context_latents: torch.Tensor, context_ids: Any,
+        target_ids: Any, mask_index: int = 1,
+    ) -> torch.Tensor:
         B = context_latents.shape[0]
-        context_inputs = self.predictor_embed(context_latents) + self.pos_embed[:, context_ids, :]
-
-        target_tokens = self.mask_token.expand(B, len(target_ids), -1)
-        target_inputs = target_tokens + self.pos_embed[:, target_ids, :]
+        context_ids = torch.as_tensor(context_ids, device=context_latents.device, dtype=torch.long)
+        target_ids = torch.as_tensor(target_ids, device=context_latents.device, dtype=torch.long)
+        if context_ids.ndim == 1:
+            context_ids = context_ids.expand(B, -1)
+        if target_ids.ndim == 1:
+            target_ids = target_ids.expand(B, -1)
+        if context_ids.ndim != 2 or target_ids.ndim != 2 or context_ids.shape[0] != B or target_ids.shape[0] != B:
+            raise ValueError("Context and target masks must have shape [B, N] or [N].")
+        if context_latents.shape[1] != context_ids.shape[1]:
+            raise ValueError("Context latent count must match context mask length.")
+        context_pos = self.pos_embed.expand(B, -1, -1).gather(
+            1, context_ids.unsqueeze(-1).expand(-1, -1, self.predictor_embed_dim)
+        )
+        target_pos = self.pos_embed.expand(B, -1, -1).gather(
+            1, target_ids.unsqueeze(-1).expand(-1, -1, self.predictor_embed_dim)
+        )
+        context_inputs = self.predictor_embed(context_latents) + context_pos
+        target_tokens = self.mask_tokens[mask_index % len(self.mask_tokens)].expand(B, target_ids.shape[1], -1)
+        target_inputs = target_tokens + target_pos
 
         x = torch.cat([context_inputs, target_inputs], dim=1)
         x = self.hook_resid_pre(x)
@@ -242,17 +265,19 @@ class VJEPAPredictor(HookedRootModule):
 
         x = self.norm(x)
 
-        target_preds = x[:, len(context_ids):, :]
+        target_preds = x[:, context_ids.shape[1]:, :]
         target_preds = self.predictor_project_back(target_preds)
         return target_preds
 
-    def __call__(self, context_latents, context_ids, target_ids):
-        return self.forward(context_latents, context_ids, target_ids)
+    def __call__(self, *args: Any, **kwargs: Any) -> torch.Tensor:
+        return self.forward(*args, **kwargs)
 
-
-@register("vjepa", WorldModelFamily.JEPA, "Video Joint-Embedding Predictive Architecture")
+@register(
+    "vjepa", WorldModelFamily.JEPA, "Video Joint-Embedding Predictive Architecture",
+    supports_rl=False, supports_video=True,
+)
 class VJEPAAdapter(BaseModelAdapter, HookedRootModule):
-    """Hookable V-JEPA-style model; not checkpoint-compatible with Meta V-JEPA v1."""
+    """Hookable V-JEPA v1 model with strict Meta checkpoint loading."""
 
     def __init__(self, config: Optional[WorldModelConfig] = None):
         if config is None:
@@ -338,13 +363,17 @@ class VJEPAAdapter(BaseModelAdapter, HookedRootModule):
 
         if state.ndim != 3:
             raise ValueError(f"Expected context latents [B, N, D], got shape {tuple(state.shape)}")
+        context_count = len(ctx_ids) if isinstance(ctx_ids, list) else ctx_ids.shape[-1]
         if state.shape[1] == n_patches:
             # encode() returns every token when no context mask was supplied.
             # Select the context tokens before passing them to the predictor.
-            state = state[:, ctx_ids, :]
-        elif state.shape[1] != len(ctx_ids):
+            if isinstance(ctx_ids, torch.Tensor) and ctx_ids.ndim == 2:
+                state = state.gather(1, ctx_ids.unsqueeze(-1).expand(-1, -1, state.shape[-1]))
+            else:
+                state = state[:, ctx_ids, :]
+        elif state.shape[1] != context_count:
             raise ValueError(
-                f"Expected {len(ctx_ids)} context tokens or {n_patches} full tokens, "
+                f"Expected {context_count} context tokens or {n_patches} full tokens, "
                 f"got {state.shape[1]}"
             )
 
@@ -352,70 +381,76 @@ class VJEPAAdapter(BaseModelAdapter, HookedRootModule):
         self.predictor.current_timestep = self.current_timestep
         return self.predictor(state, ctx_ids, tgt_ids)
 
+    def predict_masked(
+        self, video: torch.Tensor, context_ids: torch.Tensor,
+        target_ids: torch.Tensor, mask_index: int = 1,
+    ) -> torch.Tensor:
+        """Predict target tokens using explicit per-video patch indices."""
+        context = self.context_encoder(video, patch_ids=context_ids)
+        return self.predictor(context, context_ids, target_ids, mask_index=mask_index)
+
     @classmethod
     def from_checkpoint(
         cls, path: str, config: Optional[WorldModelConfig] = None
     ) -> "VJEPAAdapter":
-        """Load a checkpoint matching this adapter's architecture exactly."""
-        sd = torch.load(path, map_location="cpu")
+        """Load Meta's encoder, EMA target encoder and predictor without partial weights."""
+        checkpoint = torch.load(path, map_location="cpu", weights_only=False)
+        if not isinstance(checkpoint, dict):
+            raise RuntimeError("V-JEPA checkpoint must be a state dictionary.")
+        if "model" in checkpoint and isinstance(checkpoint["model"], dict):
+            checkpoint = checkpoint["model"]
+        if all(name in checkpoint for name in ("encoder", "target_encoder", "predictor")):
+            def map_keys(state: Dict[str, torch.Tensor], predictor: bool = False) -> Dict[str, torch.Tensor]:
+                mapped: Dict[str, torch.Tensor] = {}
+                for key, value in state.items():
+                    for prefix in ("module.", "backbone."):
+                        if key.startswith(prefix):
+                            key = key[len(prefix):]
+                    if predictor:
+                        for original, replacement in (
+                            ("predictor_blocks.", "blocks."),
+                            ("predictor_norm.", "norm."),
+                            ("predictor_proj.", "predictor_project_back."),
+                            ("predictor_pos_embed", "pos_embed"),
+                        ):
+                            if key.startswith(original):
+                                key = replacement + key[len(original):]
+                                break
+                    key = key.replace(".mlp.fc1.", ".mlp.0.")
+                    key = key.replace(".mlp.fc2.", ".mlp.2.")
+                    if key in mapped:
+                        raise RuntimeError(f"Duplicate V-JEPA checkpoint key after mapping: {key}")
+                    mapped[key] = value
+                return mapped
 
-        if "target_encoder" in sd:
-            raise NotImplementedError(
-                "Meta-style V-JEPA checkpoints contain a separate target_encoder. "
-                "This adapter cannot load them faithfully; see docs/vjepa_adapter.md."
-            )
-
-        if config is None:
-            config = WorldModelConfig.vjepa_vitl16()
-
-        if "encoder" in sd:
-            enc_sd = sd["encoder"]
-            mapped_enc = {}
-            for k, v in enc_sd.items():
-                clean_k = k.replace("module.", "")
-                clean_k = clean_k.replace(".mlp.fc1.", ".mlp.0.")
-                clean_k = clean_k.replace(".mlp.fc2.", ".mlp.2.")
-                mapped_enc[clean_k] = v
-
-            if "predictor" in sd:
-                pred_sd = sd["predictor"]
-                mapped_pred = {}
-                max_pred_idx = 0
-                for k, v in pred_sd.items():
-                    clean_k = k.replace("module.predictor_blocks.", "blocks.")
-                    clean_k = clean_k.replace("module.predictor_pos_embed", "pos_embed")
-                    clean_k = clean_k.replace("module.predictor_norm.", "norm.")
-                    clean_k = clean_k.replace("module.predictor_proj.", "predictor_project_back.")
-                    clean_k = clean_k.replace("module.", "")
-                    clean_k = clean_k.replace(".mlp.fc1.", ".mlp.0.")
-                    clean_k = clean_k.replace(".mlp.fc2.", ".mlp.2.")
-                    mapped_pred[clean_k] = v
-                    if clean_k.startswith("blocks."):
-                        try:
-                            b_idx = int(clean_k.split(".")[1])
-                            max_pred_idx = max(max_pred_idx, b_idx)
-                        except ValueError:
-                            pass
-                if max_pred_idx > 0:
-                    config.predictor_depth = max_pred_idx + 1
-
+            encoder = map_keys(checkpoint["encoder"])
+            target = map_keys(checkpoint["target_encoder"])
+            predictor = map_keys(checkpoint["predictor"], predictor=True)
+            if config is None:
+                config = WorldModelConfig.vjepa_vitl16()
+                patch_weight = encoder.get("patch_embed.proj.weight")
+                if not isinstance(patch_weight, torch.Tensor) or patch_weight.ndim != 5:
+                    raise RuntimeError("V-JEPA checkpoint lacks a 3D patch embedding weight.")
+                config.d_embed = int(patch_weight.shape[0])
+                config.tubelet_size = int(patch_weight.shape[2])
+                config.patch_size = int(patch_weight.shape[3])
+                config.n_layers = sum(k.endswith(".norm1.weight") and k.startswith("blocks.") for k in encoder)
+                pred_weight = predictor.get("predictor_embed.weight")
+                if not isinstance(pred_weight, torch.Tensor):
+                    raise RuntimeError("V-JEPA checkpoint lacks predictor_embed.weight.")
+                config.predictor_embed_dim = int(pred_weight.shape[0])
+                config.predictor_depth = sum(
+                    k.endswith(".norm1.weight") and k.startswith("blocks.") for k in predictor
+                )
             adapter = cls(config)
-
-            res_ctx = adapter.context_encoder.load_state_dict(mapped_enc, strict=True)
-            res_tgt = adapter.target_encoder.load_state_dict(mapped_enc, strict=True)
-            print(f"[VJEPAAdapter.from_checkpoint] Context/Target Encoder load status: {res_ctx}")
-
-            if "predictor" in sd:
-                res_pred = adapter.predictor.load_state_dict(mapped_pred, strict=True)
-                print(f"[VJEPAAdapter.from_checkpoint] Predictor load status: {res_pred}")
-        elif "model" in sd:
-            adapter = cls(config)
-            res = adapter.load_state_dict(sd["model"], strict=True)
-            print(f"[VJEPAAdapter.from_checkpoint] Full model load status: {res}")
+            adapter.context_encoder.load_state_dict(encoder, strict=True)
+            adapter.target_encoder.load_state_dict(target, strict=True)
+            adapter.predictor.load_state_dict(predictor, strict=True)
         else:
+            # Project-native checkpoints use the adapter's own state-dict keys.
+            if any(name in checkpoint for name in ("encoder", "target_encoder", "predictor")):
+                raise RuntimeError("V-JEPA checkpoint must contain encoder, target_encoder and predictor.")
             adapter = cls(config)
-            res = adapter.load_state_dict(sd, strict=True)
-            print(f"[VJEPAAdapter.from_checkpoint] State dict load status: {res}")
-
+            adapter.load_state_dict(checkpoint, strict=True)
         adapter.eval()
         return adapter

@@ -1,68 +1,40 @@
-# V-JEPA adapter status
+# V-JEPA adapter
 
-`VJEPAAdapter` is the hookable video transformer copied from
-`feat/mae-comparison`. It can run small configurations and expose
-activations, but it is **not yet a faithful port of Meta's pretrained V-JEPA
-v1 model**.
-
-For Meta's ViT-L architecture defaults, construct `VJEPAAdapter()` or pass
-`WorldModelConfig.vjepa_vitl16()`. A plain `WorldModelConfig(backend="vjepa")`
-retains the shared config's generic transformer values.
-
-Without explicit mask IDs, `encode()` returns all patch tokens and
-`dynamics()` uses the first half as context for a runnable smoke path. This
-deterministic split is an adapter fallback, not Meta's V-JEPA mask sampling.
+`VJEPAAdapter()` uses the ViT-L/16 architecture sizes from Meta's V-JEPA v1
+pretraining configuration. It exposes encoder and predictor activations through
+World Model Lens hooks.
 
 ## Official checkpoint
 
-Meta publishes the [V-JEPA v1 model zoo](https://github.com/facebookresearch/jepa#model-zoo),
-including the [ViT-L/16 224px checkpoint](https://dl.fbaipublicfiles.com/jepa/vitl16/vitl16.pth.tar).
-The `vjepa-vit-l-224` ModelHub entry points to that file:
+The ModelHub entry uses Meta's [ViT-L/16 checkpoint](https://dl.fbaipublicfiles.com/jepa/vitl16/vitl16.pth.tar):
 
 ```python
 from world_model_lens.hub import ModelHub
 
-path = ModelHub.pull("vjepa-vit-l-224")
+adapter = ModelHub.load("vjepa-vit-l-224", device="cpu")
 ```
 
-`ModelHub.load("vjepa-vit-l-224")` intentionally raises before downloading
-because the adapter cannot load the official weights faithfully. The local
-`vjepa_mini.pth` used in the feature branch is a small project checkpoint,
-not Meta's pretrained model. V-JEPA 2 is a separate model family and its
-checkpoints do not apply here.
+`pull()` obtains the file. `load()` then strips the official
+`module.backbone.` prefixes, maps Meta's encoder and predictor module names,
+and strictly loads the context encoder, separate EMA target encoder, and
+predictor. Missing, unexpected, or incompatible tensors raise an error.
+The predictor preserves both checkpoint mask tokens and the checkpoint's fixed
+3D positional embeddings.
 
-## Compatibility gaps
+For a video batch `[B, 3, 16, 224, 224]` and explicit context and target
+patch indices, use `adapter.predict_masked(video, context_ids, target_ids)`.
+The index tensors may have shape `[N]` for a shared mask or `[B, N]` for a
+different mask per video. `mask_index` selects one of the two checkpoint mask
+tokens. The default `encode()` then `dynamics()` path still uses a simple half
+split when no masks are supplied; pass masks for meaningful predictions.
 
-1. **Architecture defaults.** `WorldModelConfig.vjepa_vitl16()` and
-   `VJEPAAdapter()` now use Meta's ViT-L/16 sizes: 1024 channels, 24 encoder
-   blocks, 16 encoder heads, 384 predictor channels and 12 predictor blocks
-   with 16 heads. Tubelet, crop and patch sizes also match. Encoder QKV bias
-   and LayerNorm epsilon match Meta's ViT-L builder. These defaults do not
-   establish checkpoint compatibility by themselves.
-2. **Position embeddings.** Meta uses fixed 3D sine/cosine embeddings for the
-   encoder and predictor. The adapter initializes trainable position
-   embeddings at random. Even if checkpoint keys and tensor shapes were
-   mapped, missing or mishandled embeddings would change predictions.
-3. **Target encoder.** Meta checkpoints contain a separate `target_encoder`
-   produced by EMA training. The feature-branch loader copied `encoder`
-   into both encoders, discarding Meta's target weights. This branch now
-   rejects such checkpoints explicitly until separate target loading works.
-4. **Predictor and masks.** Meta uses `mask_tokens` and predictor modules
-   named `predictor_blocks`, `predictor_norm`, and `predictor_proj`.
-   The adapter uses one `mask_token`, different state-dict names, and a
-   simplified list-of-indices mask interface. Its current key remapping is
-   insufficient for Meta's checkpoint.
-5. **Verification.** The existing adapter test covers tubelet dimensions and
-   a hook on a randomly initialized small model. It does not compare outputs
-   against Meta's implementation or load an official checkpoint.
+The loader is tested with small checkpoints that use Meta's state-dict layout,
+including distinct target weights and strict missing-key failures. A full
+forward comparison with Meta's implementation and the 5.1 GB checkpoint has
+not yet been run, so numerical parity on the published weights remains to be
+verified.
 
-A faithful loader needs to infer the model configuration from the official
-checkpoint, map every tensor including the separate target encoder, preserve
-Meta's positional embeddings and predictor masks, load strictly, and compare
-outputs with the reference implementation on the same preprocessed video.
-
-Sources: [Meta V-JEPA README](https://github.com/facebookresearch/jepa/blob/main/README.md),
+Sources: [Meta V-JEPA repository](https://github.com/facebookresearch/jepa),
 [ViT-L pretraining config](https://github.com/facebookresearch/jepa/blob/main/configs/pretrain/vitl16.yaml),
-[model builder](https://github.com/facebookresearch/jepa/blob/main/app/vjepa/utils.py),
 [encoder](https://github.com/facebookresearch/jepa/blob/main/src/models/vision_transformer.py),
 [predictor](https://github.com/facebookresearch/jepa/blob/main/src/models/predictor.py).
