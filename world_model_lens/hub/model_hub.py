@@ -199,6 +199,19 @@ class ModelHub:
                 "pickle even though it uses a .pth.tar suffix."
             ),
         ),
+        "vjepa-vit-l-224": ModelInfo(
+            name="vjepa-vit-l-224",
+            backend="vjepa",
+            environment="VideoMix2M",
+            description="Meta V-JEPA v1 ViT-L/16 pretrained on VideoMix2M at 224px.",
+            coming_soon=False,
+            source_url="https://dl.fbaipublicfiles.com/jepa/vitl16/vitl16.pth.tar",
+            hf_filename="vjepa_vitl16.pth.tar",
+            notes=(
+                "Official Meta checkpoint. pull() downloads it; the current VJEPAAdapter "
+                "cannot load it faithfully. See docs/vjepa_adapter.md."
+            ),
+        ),
         "dreamerv3-atari-breakout": ModelInfo(
             name="dreamerv3-atari-breakout",
             backend="dreamerv3",
@@ -420,6 +433,12 @@ class ModelHub:
             RuntimeError: Download or loading failed.
         """
         model_info = cls.info(name)
+        if model_info.backend == "vjepa":
+            raise NotImplementedError(
+                "The official Meta V-JEPA checkpoint is available through ModelHub.pull(), "
+                "but VJEPAAdapter does not yet implement a faithful checkpoint load. "
+                "See docs/vjepa_adapter.md."
+            )
         local_path = cls.pull(name, cache_dir=cache_dir, force=force_download)
 
         if model_info.backend == "iris":
