@@ -200,12 +200,25 @@ def test_registry_iris_entries_are_downloadable():
         assert m.hf_filename is not None
 
 
+DREAMERV3_READY = {"dreamerv3-atari-boxing-size1m"}
+
+
 def test_registry_dreamerv3_entries_are_coming_soon():
-    """All dreamerv3-* entries must be coming_soon=True (JAX-only weights)."""
+    """dreamerv3-* entries without a public official checkpoint stay coming_soon."""
     dreamer_entries = [m for name, m in ModelHub._MODELS.items() if name.startswith("dreamerv3-")]
     assert len(dreamer_entries) >= 2, "Expected at least 2 DreamerV3 entries"
     for m in dreamer_entries:
-        assert m.coming_soon, f"{m.name} should be coming_soon (no public PyTorch weights)"
+        if m.name in DREAMERV3_READY:
+            continue
+        assert m.coming_soon, f"{m.name} should be coming_soon (no public checkpoint)"
+
+
+def test_registry_dreamerv3_boxing_is_downloadable_and_pinned():
+    """The Boxing entry points at a real official agent.pkl, pinned by sha256."""
+    m = ModelHub._MODELS["dreamerv3-atari-boxing-size1m"]
+    assert m.is_downloadable
+    assert m.hf_filename.endswith("agent.pkl")
+    assert m.sha256 is not None and len(m.sha256) == 64
 
 
 def test_registry_tdmpc2_entries_are_coming_soon():

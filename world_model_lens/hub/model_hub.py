@@ -81,7 +81,7 @@ class ModelHub:
 
     Coming soon:
 
-    - ``dreamerv3-*`` — JAX-only implementation; no public PyTorch weights.
+    - ``dreamerv3-*`` — official JAX checkpoints (agent.pkl) mapped onto DreamerV3Adapter; only Boxing is public so far.
     - ``tdmpc2-*``    — Real HF weights at ``nicklashansen/tdmpc2``;
       adapter key-mapping in progress.
     """
@@ -223,6 +223,28 @@ class ModelHub:
                 "in JAX. No converted PyTorch checkpoints are publicly available. "
                 "To use DreamerV3, train from scratch using a PyTorch port such as "
                 "NM512/dreamerv3-torch or sheeprl."
+            ),
+        ),
+        "dreamerv3-atari-boxing-size1m": ModelInfo(
+            name="dreamerv3-atari-boxing-size1m",
+            backend="dreamerv3",
+            environment="Atari/Boxing",
+            coming_soon=False,
+            description=(
+                "Official-code DreamerV3 (size1m preset) trained on Atari Boxing for "
+                "2M frames by a third party."
+            ),
+            hf_repo_id="HyunseoYun/dreamerv3-custom-envs",
+            hf_filename="checkpoints/atari_boxing_v3/ckpt/20260612T230555F104054/agent.pkl",
+            sha256="1da2a8318d915c7eeceee41e0338e67a0bbaf37114e773131181dca138f1f943",
+            notes=(
+                "Trained with danijar/dreamerv3 (commit e3f02248693a) using the atari "
+                "config: 96x96 grayscale, sticky actions, 18 actions, deter 512, "
+                "stoch 32x4. Not a paper configuration. The uploader's training log "
+                "reports a mean return of about 69 over the last 50 episodes. "
+                "load() reads the JAX agent.pkl with a numpy-only unpickler and maps "
+                "it one-to-one onto DreamerV3Adapter. HF repo revision "
+                "6bf007466ff075c75bb9d8452516b27f4e514deb; no license is stated."
             ),
         ),
         "dreamerv3-atari-pong": ModelInfo(
