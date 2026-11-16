@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 """Representation engineering tools for world model latent spaces.
 
 This module provides tools for:

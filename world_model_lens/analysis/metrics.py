@@ -1,5 +1,7 @@
 """Latent space metrics for world model evaluation."""
 
+from __future__ import annotations
+
 from dataclasses import dataclass
 from typing import Any
 

@@ -7,6 +7,8 @@ This module provides attribution methods adapted for time-series predictions:
 - Causal tracing through time
 """
 
+from __future__ import annotations
+
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any

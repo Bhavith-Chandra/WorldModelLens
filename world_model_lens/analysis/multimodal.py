@@ -1,5 +1,7 @@
 """Multimodal analysis and concept discovery for world models."""
 
+from __future__ import annotations
+
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -31,7 +33,7 @@ class Concept:
     interpretability_score: float
     channel: str | None = None
 
-    def similarity(self, other: "Concept") -> float:
+    def similarity(self, other: Concept) -> float:
         """Compute cosine similarity with another concept."""
         return torch.nn.functional.cosine_similarity(
             self.direction.unsqueeze(0),

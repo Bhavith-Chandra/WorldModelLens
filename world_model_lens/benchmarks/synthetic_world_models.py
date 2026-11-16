@@ -19,7 +19,8 @@ import torch.nn.functional as F
 import numpy as np
 
 from world_model_lens.backends.base_adapter import BaseModelAdapter
-from world_model_lens.core.types import WorldModelConfig, WorldState
+from world_model_lens.core.config import WorldModelConfig
+from world_model_lens.core.world_state import WorldState
 
 
 @dataclass

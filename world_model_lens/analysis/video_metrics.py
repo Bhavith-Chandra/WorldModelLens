@@ -12,6 +12,8 @@ Metrics:
 - LPIPS: Perceptual similarity
 """
 
+from __future__ import annotations
+
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -190,7 +192,7 @@ class VideoPredictionMetrics:
 
     def from_cache(
         self,
-        cache: "ActivationCache",
+        cache: ActivationCache,
         pred_key: str = "reconstruction",
         target_key: str = "observation",
     ) -> VideoMetricsResult:
