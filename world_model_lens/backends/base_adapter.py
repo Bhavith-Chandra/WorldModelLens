@@ -99,6 +99,8 @@ class WorldModelCapabilities:
     has_critic: bool = False
     uses_actions: bool = False  # True for RL/control, False for pure video/science models
     is_rl_trained: bool = False  # RL vs self-supervised vs supervised etc.
+    # encode() and dynamics() return logits [..., n_cat, n_cls] and sample_z() draws z.
+    categorical_latents: bool = False
 
     def __post_init__(self):
         """Validate capability consistency."""
