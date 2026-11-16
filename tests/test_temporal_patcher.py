@@ -171,3 +171,18 @@ def test_shuffle_permutes_timesteps(runs):
     permuted = sorted(shuffled["state", t].tolist() for t in shuffled.timesteps)
     assert permuted == original
     assert shuffled["state"].shape == clean_cache["state"].shape
+
+
+def test_patching_an_unreached_site_raises(patcher, runs):
+    clean_obs, _, actions, clean_cache, corrupted_cache = runs
+    with pytest.raises(ValueError, match="not computed"):
+        patcher.patch_state(
+            clean_cache,
+            corrupted_cache,
+            "pos",
+            2,
+            final_state_sum,
+            clean_obs,
+            actions,
+            patch_value=torch.zeros(D),
+        )

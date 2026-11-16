@@ -232,6 +232,11 @@ class TemporalPatcher:
 
         hook = HookPoint(name=patch_component, fn=replace, timestep=patch_at_timestep)
         _, patched_cache = self._run_with_patches(obs_seq, action_seq, [hook])
+        if "original" not in recorded:
+            raise ValueError(
+                f"{patch_component!r} was not computed at t={patch_at_timestep}; "
+                "see HookedWorldModel.list_hookable_points()"
+            )
 
         clean_metric = self.compute_metric_from_cache(clean_cache, metric_fn)
         corrupted_metric = self.compute_metric_from_cache(corrupted_cache, metric_fn)
@@ -245,7 +250,7 @@ class TemporalPatcher:
             component=patch_component,
             timestep=patch_at_timestep,
             patch_mode="denoise" if denoise else "noise",
-            original_value=recorded.get("original"),
+            original_value=recorded["original"],
             patched_value=patch_value,
         )
 
