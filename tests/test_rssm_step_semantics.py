@@ -1,4 +1,4 @@
-"""run_with_cache must execute the adapter's own RSSM step and let hooks intervene."""
+"""run_with_cache and imagine must execute the adapter's own RSSM step."""
 
 import pytest
 import torch
@@ -125,3 +125,81 @@ def test_hooks_change_downstream_computation(adapter, inputs, component):
         assert not torch.allclose(patched.states[2].reward_pred, clean.states[2].reward_pred)
     else:
         assert not torch.allclose(patched.states[3].h_t, clean.states[3].h_t)
+
+
+def reference_imagine(adapter, h, z, actions):
+    steps = []
+    for action in actions:
+        h = adapter.transition(h, z, action[None])
+        z = adapter.sample_z(adapter.dynamics(h))
+        steps.append({"h": h[0], "z": z[0], "reward": adapter.predict_reward(h, z)[0]})
+    return steps
+
+
+@torch.no_grad()
+def test_imagine_matches_reference(adapter, inputs):
+    obs, actions = inputs
+    wm = HookedWorldModel(adapter, adapter.config)
+    _, latent, _ = wm.run_with_cache(obs, actions)
+    start = latent.states[1]
+    plan = actions[2:]
+
+    torch.manual_seed(3)
+    ref = reference_imagine(adapter, start.h_t[None], start.z[None], plan)
+    torch.manual_seed(3)
+    world, imagined = wm.imagine(start, actions=plan, horizon=len(plan))
+
+    for k, step in enumerate(ref):
+        torch.testing.assert_close(imagined.states[k].h_t, step["h"])
+        torch.testing.assert_close(imagined.states[k].z, step["z"])
+        torch.testing.assert_close(imagined.states[k].reward_pred, step["reward"])
+        torch.testing.assert_close(world.states[k].state, step["h"])
+        assert imagined.states[k].timestep == start.timestep + k + 1
+
+
+@torch.no_grad()
+def test_imagine_continues_from_observed_state(adapter, inputs):
+    obs, actions = inputs
+    wm = HookedWorldModel(adapter, adapter.config)
+    _, latent, _ = wm.run_with_cache(obs, actions)
+
+    for t in range(T - 1):
+        _, imagined = wm.imagine(latent.states[t], actions=actions[t : t + 1], horizon=1)
+        torch.testing.assert_close(imagined.states[0].h_t, latent.states[t + 1].h_t)
+
+
+@torch.no_grad()
+def test_imagine_samples_policy_actions(adapter, inputs):
+    obs, actions = inputs
+    wm = HookedWorldModel(adapter, adapter.config)
+    _, latent, _ = wm.run_with_cache(obs, actions)
+
+    world, imagined = wm.imagine(latent.states[-1], horizon=4)
+
+    assert imagined.length == 4
+    for state in world.states:
+        assert state.action_source.source_type == "policy_sampled"
+        assert 0 <= int(state.action) < SMALL["action_dim"]
+
+
+@torch.no_grad()
+def test_imagine_requires_sampled_start_latent(adapter, inputs):
+    obs, actions = inputs
+    wm = HookedWorldModel(adapter, adapter.config)
+    world, latent, _ = wm.run_with_cache(obs, actions)
+
+    with pytest.raises(ValueError):
+        wm.imagine(world.states[0], horizon=2)
+    latent.states[0].z = None
+    with pytest.raises(ValueError):
+        wm.imagine(latent.states[0], horizon=2)
+
+
+@torch.no_grad()
+def test_latent_state_keeps_z_when_moved(adapter, inputs):
+    obs, actions = inputs
+    _, latent, _ = HookedWorldModel(adapter, adapter.config).run_with_cache(obs, actions)
+    state = latent.states[0]
+
+    torch.testing.assert_close(state.to_device(torch.device("cpu")).z, state.z)
+    torch.testing.assert_close(state.detach().z, state.z)

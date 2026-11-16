@@ -15,7 +15,7 @@ if TYPE_CHECKING:
 
 from world_model_lens.core.hooks import HookContext, HookPoint, HookRegistry
 from world_model_lens.core.activation_cache import ActivationCache
-from world_model_lens.core.world_state import WorldState
+from world_model_lens.core.world_state import ActionSource, WorldState
 from world_model_lens.core.world_trajectory import WorldTrajectory
 from world_model_lens.backends.base_adapter import WorldModelCapabilities
 from world_model_lens.core.hook_cache import HookCacheManager
@@ -506,8 +506,6 @@ class HookedWorldModel:
             action_for_state = action.clone() if action is not None else None
             action_source = None
             if action_for_state is not None:
-                from world_model_lens.core.world_state import ActionSource
-
                 action_source = ActionSource(source_type="externally_provided", temperature=None)
 
             world_states.append(
@@ -531,6 +529,7 @@ class HookedWorldModel:
                     reward_pred=reward_pred.clone() if reward_pred is not None else None,
                     value_pred=value_pred.clone() if value_pred is not None else None,
                     obs_encoding=obs_encoding.clone() if obs_encoding is not None else None,
+                    z=z.clone(),
                 )
             )
 
@@ -594,6 +593,11 @@ class HookedWorldModel:
         Works with ANY world model - RL and non-RL. For non-RL models,
         actions are ignored.
 
+        Each step runs ``h_{t+1} = transition(h_t, z_t, a_t)`` and then draws
+        ``z_{t+1}`` from ``dynamics(h_{t+1})``, starting from the start state's
+        latent. Adapters with categorical latents need a LatentState from
+        ``run_with_cache`` or ``imagine``, which records the latent in ``z``.
+
         Args:
             start_state: Starting WorldState or LatentState
             actions: Optional action sequence to execute (ignored for non-RL models)
@@ -604,118 +608,110 @@ class HookedWorldModel:
             Tuple of (WorldTrajectory, LatentTrajectory)
         """
         caps = self._get_capabilities()
-        # Accept either world-facing or latent-facing start states so
-        # callers can branch from the representation they already have.
+        categorical = caps.categorical_latents
+        start_timestep = start_state.timestep
+
         if isinstance(start_state, LatentState):
+            if categorical and start_state.z is None:
+                raise ValueError(
+                    "imagine() needs the sampled latent of the start state; "
+                    "use a LatentState returned by run_with_cache() or imagine()."
+                )
             state = start_state.h_t.clone()
-            z = start_state.z_posterior.clone()
-            start_timestep = start_state.timestep
+            z = (start_state.z if start_state.z is not None else start_state.z_posterior).clone()
+        elif categorical:
+            raise ValueError("imagine() needs a LatentState for adapters with categorical latents.")
         else:
             state = start_state.state.clone()
             z = start_state.obs_encoding if start_state.obs_encoding is not None else state
-            start_timestep = start_state.timestep
+
+        def batched(tensor: torch.Tensor) -> torch.Tensor:
+            return tensor.unsqueeze(0) if tensor.dim() == 1 else tensor
+
         world_states = []
         latent_states = []
 
         for t in range(horizon):
+            timestep = start_timestep + t + 1
             action = None
             action_source = None
 
             if caps.uses_actions:
                 if actions is not None and t < len(actions):
-                    # Externally provided action
                     action = actions[t]
-                    from world_model_lens.core.world_state import ActionSource
-
-                    action_source = ActionSource(
-                        source_type="externally_provided",
-                        temperature=None,
-                    )
+                    action_source = ActionSource(source_type="externally_provided", temperature=None)
                 elif caps.has_actor:
-                    # Sample action from policy
                     try:
-                        policy_logits = self.adapter.actor_forward(
-                            state.unsqueeze(0) if state.dim() == 1 else state,
-                            z.unsqueeze(0) if z.dim() == 1 else z,
-                        )
-                        if policy_logits is not None:
-                            # Sample action from policy
-                            if policy_logits.dim() > 2:
-                                policy_logits = policy_logits.squeeze(0)
-
-                            # Handle different action distributions
-                            if policy_logits.shape[-1] == 1:
-                                # Continuous action
-                                action = torch.tanh(policy_logits)  # Assuming tanh squashing
-                            else:
-                                # Discrete action
-                                probs = torch.softmax(policy_logits / temperature, dim=-1)
-                                action_idx = torch.multinomial(probs, 1).item()
-                                action = torch.tensor([action_idx], dtype=torch.long)
-
-                            from world_model_lens.core.world_state import ActionSource
-
-                            action_source = ActionSource(
-                                source_type="policy_sampled",
-                                policy_logits=policy_logits.detach(),
-                                temperature=temperature,
-                            )
+                        policy_logits = self.adapter.actor_forward(batched(state), batched(z))
                     except NotImplementedError:
-                        pass
+                        policy_logits = None
+                    if policy_logits is not None:
+                        if policy_logits.dim() > 2:
+                            policy_logits = policy_logits.squeeze(0)
+                        if policy_logits.shape[-1] == 1:
+                            action = torch.tanh(policy_logits)
+                        else:
+                            probs = torch.softmax(policy_logits / temperature, dim=-1)
+                            action_idx = torch.multinomial(probs, 1).item()
+                            action = torch.tensor([action_idx], dtype=torch.long)
+                        action_source = ActionSource(
+                            source_type="policy_sampled",
+                            policy_logits=policy_logits.detach(),
+                            temperature=temperature,
+                        )
 
-            prior = self.adapter.dynamics(
-                state.unsqueeze(0) if state.dim() == 1 else state,
-            )
-            if prior.dim() > 1:
-                z = self.adapter.sample_z(prior.squeeze(0), temperature=temperature)
-            else:
-                z = prior.squeeze(0) if prior.dim() == 1 else prior
-
-            prev_state = state.clone()
-            state = self._call_transition(state, z, action)
-
-            # Apply transition hook for causality analysis
-            transition_ctx = HookContext(
-                timestep=t + start_timestep + 1,
-                component="transition",
-                trajectory_so_far=latent_states,
-                metadata={
-                    "s_t": state.clone(),  # Current state after transition
-                    "s_prev": prev_state,  # Previous state
-                    "a_t": action,  # Action used
-                    "z_t": z,  # Latent encoding
-                },
-            )
+            prev_state = state
+            state = self._call_transition(batched(state), batched(z), action).squeeze(0)
             state = self._hooks.apply(
-                "transition", t + start_timestep + 1, state, transition_ctx
+                "transition",
+                timestep,
+                state,
+                HookContext(
+                    timestep=timestep,
+                    component="transition",
+                    trajectory_so_far=latent_states,
+                    metadata={"s_t": state.clone(), "s_prev": prev_state, "a_t": action, "z_t": z},
+                ),
             )
+
+            prior = self.adapter.dynamics(batched(state))
+            prior = prior.squeeze(0) if prior.dim() > 1 else prior
+            if categorical:
+                z = self.adapter.sample_z(prior, temperature=temperature)
+                prior_probs = self._latent_logprobs(prior).exp()
+            else:
+                z = self.adapter.sample_z(prior, temperature=temperature) if prior.dim() > 1 else prior
+                prior_probs = z
 
             reward_pred = None
-            if caps.has_reward_head and t > 0:
+            if caps.has_reward_head:
                 try:
-                    reward_pred = self.adapter.predict_reward(state, z)
-                    reward_pred = reward_pred.squeeze(0) if reward_pred is not None else None
+                    reward_pred = self.adapter.predict_reward(batched(state), batched(z))
                 except NotImplementedError:
                     pass
+                if reward_pred is not None:
+                    reward_pred = reward_pred.squeeze(0)
 
-            world_state = WorldState(
-                state=state.clone(),
-                timestep=t + start_timestep + 1,
-                action=action.clone() if action is not None else None,
-                action_source=action_source,
-                reward_pred=reward_pred,
+            world_states.append(
+                WorldState(
+                    state=state.clone(),
+                    timestep=timestep,
+                    action=action.clone() if action is not None else None,
+                    action_source=action_source,
+                    reward_pred=reward_pred,
+                )
             )
-            world_states.append(world_state)
-
-            latent_state = LatentState(
-                h_t=state.clone(),
-                z_posterior=z.clone(),
-                z_prior=z.clone(),
-                timestep=t + start_timestep + 1,
-                action=action.clone() if action is not None else None,
-                reward_pred=reward_pred.clone() if reward_pred is not None else None,
+            latent_states.append(
+                LatentState(
+                    h_t=state.clone(),
+                    z_posterior=prior_probs.clone(),
+                    z_prior=prior_probs.clone(),
+                    timestep=timestep,
+                    action=action.clone() if action is not None else None,
+                    reward_pred=reward_pred.clone() if reward_pred is not None else None,
+                    z=z.clone(),
+                )
             )
-            latent_states.append(latent_state)
 
         world_traj = WorldTrajectory(
             states=world_states,
