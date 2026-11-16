@@ -529,7 +529,7 @@ class HookedWorldModel:
                     reward_pred=reward_pred.clone() if reward_pred is not None else None,
                     value_pred=value_pred.clone() if value_pred is not None else None,
                     obs_encoding=obs_encoding.clone() if obs_encoding is not None else None,
-                    z=z.clone(),
+                    z=z.clone() if categorical else None,
                 )
             )
 
@@ -709,7 +709,7 @@ class HookedWorldModel:
                     timestep=timestep,
                     action=action.clone() if action is not None else None,
                     reward_pred=reward_pred.clone() if reward_pred is not None else None,
-                    z=z.clone(),
+                    z=z.clone() if categorical else None,
                 )
             )
 

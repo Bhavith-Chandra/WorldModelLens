@@ -1,10 +1,13 @@
 """run_with_cache and imagine must execute the adapter's own RSSM step."""
 
+from types import SimpleNamespace
+
 import pytest
 import torch
 from torch.distributions import Categorical, kl_divergence
 
 from world_model_lens import HookedWorldModel
+from world_model_lens.backends.base_adapter import BaseModelAdapter
 from world_model_lens.backends.dreamerv3 import DreamerV3Adapter, default_arch
 from world_model_lens.core.hooks import HookPoint
 
@@ -203,3 +206,34 @@ def test_latent_state_keeps_z_when_moved(adapter, inputs):
 
     torch.testing.assert_close(state.to_device(torch.device("cpu")).z, state.z)
     torch.testing.assert_close(state.detach().z, state.z)
+
+
+class ContinuousWorldModel(BaseModelAdapter):
+    """h_{t+1} = 0.5 * h_t + z_t with z_t = obs_t and no categorical latents."""
+
+    def __init__(self):
+        super().__init__(SimpleNamespace(d_h=3, d_z=3))
+
+    def encode(self, obs, h_prev):
+        return obs, obs
+
+    def transition(self, h, z, action=None):
+        return 0.5 * h + z
+
+    def sample_z(self, logits_or_repr, temperature=1.0, sample=True):
+        return logits_or_repr
+
+
+@torch.no_grad()
+def test_imagine_uses_edited_posterior_for_continuous_latents():
+    adapter = ContinuousWorldModel()
+    wm = HookedWorldModel(adapter, adapter.config)
+    _, latent, _ = wm.run_with_cache(torch.ones(T, 3))
+    start = latent.states[2]
+    assert start.z is None
+
+    _, unchanged = wm.imagine(start, horizon=1)
+    start.z_posterior = start.z_posterior + 1.0
+    _, edited = wm.imagine(start, horizon=1)
+
+    torch.testing.assert_close(edited.states[0].h_t, unchanged.states[0].h_t + 1.0)
