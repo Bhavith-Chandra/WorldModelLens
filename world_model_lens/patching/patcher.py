@@ -1,5 +1,6 @@
 """Activation patching for causal analysis."""
 
+import math
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
@@ -80,26 +81,24 @@ class PatchingSweepResult:
         return matrix
 
     def top_k_patches(self, k: int = 10) -> List[PatchResult]:
-        """Get top-k patches by recovery rate."""
-        sorted_results = sorted(self.results.values(), key=lambda x: x.recovery_rate, reverse=True)
-        return sorted_results[:k]
+        """Get top-k patches by recovery rate, skipping unmeasurable (NaN) ones."""
+        measured = [r for r in self.results.values() if not math.isnan(r.recovery_rate)]
+        return sorted(measured, key=lambda r: r.recovery_rate, reverse=True)[:k]
 
     def get_component_rankings(self) -> Dict[str, float]:
         """Get average recovery rate per component."""
         component_scores: Dict[str, List[float]] = {}
         for (comp, _), result in self.results.items():
-            if comp not in component_scores:
-                component_scores[comp] = []
-            component_scores[comp].append(result.recovery_rate)
+            if not math.isnan(result.recovery_rate):
+                component_scores.setdefault(comp, []).append(result.recovery_rate)
         return {comp: sum(scores) / len(scores) for comp, scores in component_scores.items()}
 
     def get_timestep_rankings(self) -> Dict[int, float]:
         """Get average recovery rate per timestep."""
         timestep_scores: Dict[int, List[float]] = {}
         for (_, t), result in self.results.items():
-            if t not in timestep_scores:
-                timestep_scores[t] = []
-            timestep_scores[t].append(result.recovery_rate)
+            if not math.isnan(result.recovery_rate):
+                timestep_scores.setdefault(t, []).append(result.recovery_rate)
         return {t: sum(scores) / len(scores) for t, scores in timestep_scores.items()}
 
     def heatmap(self, title: str = "Patching Recovery", figsize: Tuple[int, int] = (12, 8)):
@@ -149,35 +148,27 @@ class TemporalPatcher:
     def compute_metric_from_cache(
         self,
         cache: ActivationCache,
-        component: str,
         metric_fn: Callable[[ActivationCache], float],
     ) -> float:
-        """Compute metric from activation cache.
-
-        Args:
-            cache: Activation cache.
-            metric_fn: Function to compute metric.
-
-        Returns:
-            Metric value.
-        """
-        return metric_fn(cache[component]) if component in list(cache.keys()) else 0.0
+        """Compute a metric from an activation cache."""
+        return float(metric_fn(cache))
 
     def compute_metric_from_trajectory(
         self,
         traj: WorldTrajectory,
         metric_fn: Callable[[WorldTrajectory], float],
     ) -> float:
-        """Compute metric from trajectory.
+        """Compute a metric from a trajectory."""
+        return float(metric_fn(traj))
 
-        Args:
-            traj: World trajectory.
-            metric_fn: Function to compute metric.
-
-        Returns:
-            Metric value.
-        """
-        return metric_fn(traj)
+    def _run_with_patches(
+        self, obs_seq: Tensor, action_seq: Tensor, hooks: List[HookPoint]
+    ) -> Tuple[WorldTrajectory, ActivationCache]:
+        with self.wm.hook_registry.temp_hooks(hooks):
+            traj, _, cache = self.wm.run_with_cache(
+                self._ensure_device(obs_seq), self._ensure_device(action_seq)
+            )
+        return traj, cache
 
     def patch_state(
         self,
@@ -189,83 +180,73 @@ class TemporalPatcher:
         clean_obs_seq: Optional[Tensor] = None,
         clean_action_seq: Optional[Tensor] = None,
         patch_value: Optional[Tensor] = None,
+        corrupted_obs_seq: Optional[Tensor] = None,
+        corrupted_action_seq: Optional[Tensor] = None,
     ) -> PatchResult:
-        """Patch a single component at a timestep.
+        """Patch one component at one timestep and measure the effect.
+
+        With corrupted inputs, this denoises: the corrupted inputs are run with
+        the clean activation patched in. Without them, this noises: the clean
+        inputs are run with the corrupted activation patched in.
+
+        The recovery rate is ``(patched - corrupted) / (clean - corrupted)`` of
+        ``metric_fn``, unclipped, and NaN when the clean and corrupted metrics
+        are equal.
 
         Args:
-            clean_cache: Clean activation cache.
-            corrupted_cache: Corrupted activation cache.
+            clean_cache: Cache from the clean run.
+            corrupted_cache: Cache from the corrupted run.
             patch_component: Component to patch.
             patch_at_timestep: Timestep to patch.
-            metric_fn: Function computing metric from cache.
-            clean_obs_seq: Clean observations (for patched run).
-            clean_action_seq: Clean actions (for patched run).
-            patch_value: Optional specific value to patch with.
+            metric_fn: Maps an ActivationCache to a scalar.
+            clean_obs_seq: Clean observations.
+            clean_action_seq: Clean actions.
+            patch_value: Value to patch in instead of the cached one.
+            corrupted_obs_seq: Corrupted observations, to denoise.
+            corrupted_action_seq: Corrupted actions; defaults to the clean actions.
 
         Returns:
-            PatchResult with recovery rate.
+            PatchResult with the recovery rate.
         """
-        clean_metric = self.compute_metric_from_cache(clean_cache, patch_component, metric_fn)
-        corrupted_metric = self.compute_metric_from_cache(
-            corrupted_cache, patch_component, metric_fn
-        )
+        if clean_obs_seq is None or clean_action_seq is None:
+            raise ValueError("clean_obs_seq and clean_action_seq are required")
+
+        denoise = corrupted_obs_seq is not None
+        if denoise:
+            obs_seq = corrupted_obs_seq
+            action_seq = clean_action_seq if corrupted_action_seq is None else corrupted_action_seq
+            source_cache = clean_cache
+        else:
+            obs_seq, action_seq = clean_obs_seq, clean_action_seq
+            source_cache = corrupted_cache
 
         if patch_value is None:
-            patch_value = self._ensure_device(
-                clean_cache[patch_component, patch_at_timestep].clone()
-            )
+            patch_value = source_cache[patch_component, patch_at_timestep]
+        patch_value = self._ensure_device(patch_value.detach().clone())
 
-        original_value: Optional[Tensor] = None
-        patched_value: Optional[Tensor] = None
+        recorded: Dict[str, Tensor] = {}
 
-        def patch_hook(tensor: Tensor, ctx: HookContext) -> Tensor:
-            nonlocal original_value, patched_value
-            if ctx.component == patch_component and ctx.timestep == patch_at_timestep:
-                original_value = tensor.detach().clone()
-                patched_value = patch_value.detach().clone()
-                return patched_value
-            return tensor
+        def replace(tensor: Tensor, ctx: HookContext) -> Tensor:
+            recorded["original"] = tensor.detach().clone()
+            return patch_value
 
-        hook = HookPoint(
-            name=patch_component,
-            fn=patch_hook,
-            stage="post",
-            timestep=patch_at_timestep,
-        )
-        self.wm.add_hook(hook)
+        hook = HookPoint(name=patch_component, fn=replace, timestep=patch_at_timestep)
+        _, patched_cache = self._run_with_patches(obs_seq, action_seq, [hook])
 
-        try:
-            if clean_obs_seq is not None and clean_action_seq is not None:
-                obs_seq = self._ensure_device(clean_obs_seq)
-                action_seq = self._ensure_device(clean_action_seq)
-                patched_traj, _, patched_cache = self.wm.run_with_cache(obs_seq, action_seq)
-                patched_metric = self.compute_metric_from_cache(
-                    patched_cache, patch_component, metric_fn
-                )
-            else:
-                raise ValueError("clean_obs_seq and clean_action_seq required")
-
-        except Exception as e:
-            raise RuntimeError(f"Patching failed: {e}")
-        finally:
-            self.wm.clear_hooks()
-
-        if abs(clean_metric - corrupted_metric) < 1e-8:
-            recovery = 1.0
-        else:
-            recovery = (patched_metric - corrupted_metric) / (clean_metric - corrupted_metric)
-        recovery = max(0.0, min(1.0, recovery))
+        clean_metric = self.compute_metric_from_cache(clean_cache, metric_fn)
+        corrupted_metric = self.compute_metric_from_cache(corrupted_cache, metric_fn)
+        patched_metric = self.compute_metric_from_cache(patched_cache, metric_fn)
 
         return PatchResult(
             metric_clean=clean_metric,
             metric_corrupted=corrupted_metric,
             metric_patched=patched_metric,
-            recovery_rate=recovery,
+            recovery_rate=_recovery(clean_metric, corrupted_metric, patched_metric),
             component=patch_component,
             timestep=patch_at_timestep,
-            patch_mode="single",
-            original_value=original_value,
-            patched_value=patched_value,
+            patch_mode="denoise" if denoise else "noise",
+            original_value=recorded.get("original"),
+            patched_value=patch_value,
         )
 
     def patch_state_with_corruption(
@@ -277,89 +258,55 @@ class TemporalPatcher:
         patch_at_timestep: int,
         metric_fn: Callable[[WorldTrajectory], float],
     ) -> PatchResult:
-        """Patch with automatic corruption generation.
+        """Corrupt a component at every timestep, then restore it at one timestep.
+
+        The corrupted run applies ``corruption_fn`` to ``patch_component`` at
+        every timestep. The patched run does the same, except that the clean
+        value is restored at ``patch_at_timestep``.
 
         Args:
             clean_obs_seq: Clean observations.
             clean_action_seq: Clean actions.
-            corruption_fn: Function to corrupt activations.
-            patch_component: Component to patch.
-            patch_at_timestep: Timestep to patch.
-            metric_fn: Metric function from trajectory.
+            corruption_fn: Maps an activation to its corrupted version.
+            patch_component: Component to corrupt and restore.
+            patch_at_timestep: Timestep at which the clean value is restored.
+            metric_fn: Maps a WorldTrajectory to a scalar.
 
         Returns:
-            PatchResult.
+            PatchResult with the recovery rate.
         """
-        clean_obs = self._ensure_device(clean_obs_seq)
-        clean_actions = self._ensure_device(clean_action_seq)
+        clean_traj, clean_cache = self._run_with_patches(clean_obs_seq, clean_action_seq, [])
+        clean_value = clean_cache[patch_component, patch_at_timestep].detach().clone()
 
-        clean_traj, _, clean_cache = self.wm.run_with_cache(clean_obs, clean_actions)
+        def corrupt(tensor: Tensor, ctx: HookContext) -> Tensor:
+            return corruption_fn(tensor)
+
+        def restore(tensor: Tensor, ctx: HookContext) -> Tensor:
+            return clean_value
+
+        corrupt_hook = HookPoint(name=patch_component, fn=corrupt)
+        restore_hook = HookPoint(name=patch_component, fn=restore, timestep=patch_at_timestep)
+
+        corrupted_traj, _ = self._run_with_patches(
+            clean_obs_seq, clean_action_seq, [corrupt_hook]
+        )
+        patched_traj, _ = self._run_with_patches(
+            clean_obs_seq, clean_action_seq, [corrupt_hook, restore_hook]
+        )
+
         clean_metric = self.compute_metric_from_trajectory(clean_traj, metric_fn)
-
-        corrupted_cache = ActivationCache()
-        for key in clean_cache.component_names:
-            for t in clean_cache.timesteps:
-                original = clean_cache.get(key, t, None)
-                if original is not None:
-                    original = self._ensure_device(original)
-                    corrupted = corruption_fn(original)
-                    corrupted_cache[key, t] = corrupted
-
-        def create_corrupted_hook(comp: str, t: int, corr_val: Tensor):
-            def hook(tensor: Tensor, ctx: HookContext) -> Tensor:
-                if ctx.component == comp and ctx.timestep == t:
-                    return corr_val
-                return tensor
-
-            return hook
-
-        hook = HookPoint(
-            name=patch_component,
-            fn=create_corrupted_hook(
-                patch_component,
-                patch_at_timestep,
-                corrupted_cache[patch_component, patch_at_timestep],
-            ),
-            stage="post",
-            timestep=patch_at_timestep,
-        )
-        self.wm.add_hook(hook)
-
-        try:
-            corrupted_traj, _, _ = self.wm.run_with_cache(clean_obs, clean_actions)
-            corrupted_metric = self.compute_metric_from_trajectory(corrupted_traj, metric_fn)
-        finally:
-            self.wm.clear_hooks()
-
-        patch_value = self._ensure_device(clean_cache[patch_component, patch_at_timestep].clone())
-        hook2 = HookPoint(
-            name=patch_component,
-            fn=lambda t, c: patch_value,
-            stage="post",
-            timestep=patch_at_timestep,
-        )
-        self.wm.add_hook(hook2)
-
-        try:
-            patched_traj, _, _ = self.wm.run_with_cache(clean_obs, clean_actions)
-            patched_metric = self.compute_metric_from_trajectory(patched_traj, metric_fn)
-        finally:
-            self.wm.clear_hooks()
-
-        if abs(clean_metric - corrupted_metric) < 1e-8:
-            recovery = 1.0
-        else:
-            recovery = (patched_metric - corrupted_metric) / (clean_metric - corrupted_metric)
-        recovery = max(0.0, min(1.0, recovery))
+        corrupted_metric = self.compute_metric_from_trajectory(corrupted_traj, metric_fn)
+        patched_metric = self.compute_metric_from_trajectory(patched_traj, metric_fn)
 
         return PatchResult(
             metric_clean=clean_metric,
             metric_corrupted=corrupted_metric,
             metric_patched=patched_metric,
-            recovery_rate=recovery,
+            recovery_rate=_recovery(clean_metric, corrupted_metric, patched_metric),
             component=patch_component,
             timestep=patch_at_timestep,
             patch_mode="auto_corrupt",
+            patched_value=clean_value,
         )
 
     def full_sweep(
@@ -372,36 +319,35 @@ class TemporalPatcher:
         clean_obs_seq: Optional[Tensor] = None,
         clean_action_seq: Optional[Tensor] = None,
         parallel: bool = False,
+        corrupted_obs_seq: Optional[Tensor] = None,
+        corrupted_action_seq: Optional[Tensor] = None,
     ) -> PatchingSweepResult:
-        """Run full patching sweep across components and timesteps.
+        """Run patch_state for every component and timestep.
 
         Args:
-            clean_cache: Clean activation cache.
-            corrupted_cache: Corrupted activation cache.
-            components: List of components to test.
-            metric_fn: Metric function.
-            t_range: Optional list of timesteps.
-            clean_obs_seq: Clean observations for patched runs.
-            clean_action_seq: Clean actions for patched runs.
-            parallel: Whether to run in parallel.
+            clean_cache: Cache from the clean run.
+            corrupted_cache: Cache from the corrupted run.
+            components: Components to patch.
+            metric_fn: Maps an ActivationCache to a scalar.
+            t_range: Timesteps to patch; defaults to all cached timesteps.
+            clean_obs_seq: Clean observations.
+            clean_action_seq: Clean actions.
+            parallel: Unused; kept for compatibility.
+            corrupted_obs_seq: Corrupted observations, to denoise.
+            corrupted_action_seq: Corrupted actions; defaults to the clean actions.
 
         Returns:
             PatchingSweepResult.
         """
         if t_range is None:
-            if clean_cache.timesteps:
-                t_range = list(range(max(clean_cache.timesteps) + 1))
-            else:
-                t_range = list(range(10))
+            t_range = list(clean_cache.timesteps)
 
         results: Dict[Tuple[str, int], PatchResult] = {}
-
-        total_experiments = len(components) * len(t_range)
-        iterator = tqdm(total=total_experiments, desc="Patching sweep") if tqdm else None
+        progress = tqdm(total=len(components) * len(t_range), desc="Patching sweep") if tqdm else None
 
         for comp in components:
             for t in t_range:
-                result = self.patch_state(
+                results[(comp, t)] = self.patch_state(
                     clean_cache,
                     corrupted_cache,
                     comp,
@@ -409,13 +355,14 @@ class TemporalPatcher:
                     metric_fn,
                     clean_obs_seq,
                     clean_action_seq,
+                    corrupted_obs_seq=corrupted_obs_seq,
+                    corrupted_action_seq=corrupted_action_seq,
                 )
-                results[(comp, t)] = result
-                if iterator:
-                    iterator.update(1)
+                if progress:
+                    progress.update(1)
 
-        if iterator:
-            iterator.close()
+        if progress:
+            progress.close()
 
         return PatchingSweepResult(
             results=results,
@@ -423,6 +370,12 @@ class TemporalPatcher:
             timesteps=t_range,
             device=self.device,
         )
+
+
+def _recovery(clean: float, corrupted: float, patched: float) -> float:
+    if clean == corrupted:
+        return float("nan")
+    return (patched - corrupted) / (clean - corrupted)
 
 
 class CorruptedCacheFactory:
@@ -492,7 +445,7 @@ class CorruptedCacheFactory:
         cache: ActivationCache,
         components: Optional[List[str]] = None,
     ) -> ActivationCache:
-        """Shuffle activations across timesteps.
+        """Shuffle each component's activations across timesteps.
 
         Args:
             cache: Source cache.
@@ -501,25 +454,15 @@ class CorruptedCacheFactory:
         Returns:
             Corrupted cache.
         """
-        device = cache.device if hasattr(cache, "device") else _get_device()
         corrupted = ActivationCache()
 
-        target_components = components or list(cache.component_names)
-
-        for key in target_components:
-            all_tensors = []
-            for t in cache.timesteps:
-                val = cache.get(key, t, None)
-                if val is not None:
-                    all_tensors.append(val.to(device))
-
-            if all_tensors:
-                shuffled = torch.cat(all_tensors)[torch.randperm(len(all_tensors))]
-                for i, t in enumerate(cache.timesteps):
-                    if i < len(all_tensors):
-                        start = i * all_tensors[0].shape[0]
-                        end = start + all_tensors[0].shape[0]
-                        corrupted[key, t] = shuffled[start:end]
+        for key in components or list(cache.component_names):
+            timesteps = [t for t in cache.timesteps if cache.get(key, t) is not None]
+            if not timesteps:
+                continue
+            permutation = torch.randperm(len(timesteps)).tolist()
+            for t, source in zip(timesteps, permutation):
+                corrupted[key, t] = cache[key, timesteps[source]]
 
         return corrupted
 
