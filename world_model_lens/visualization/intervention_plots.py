@@ -28,7 +28,7 @@ class InterventionVisualizer:
 
         # Get original and intervened trajectories
         obs = torch.randn(20, 3, 64, 64)
-        traj, _ = world_model.run_with_cache(obs)
+        traj, _, _ = world_model.run_with_cache(obs)
 
         # Create intervention
         def ablate_hook(tensor, ctx):

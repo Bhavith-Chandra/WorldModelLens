@@ -139,7 +139,7 @@ class CartPoleBenchmark:
         for obs in observations[:10]:
             if obs.dim() == 1:
                 obs = obs.unsqueeze(0)
-            traj, _ = self.wm.run_with_cache(obs.unsqueeze(0) if obs.dim() == 1 else obs)
+            traj, _, _ = self.wm.run_with_cache(obs.unsqueeze(0) if obs.dim() == 1 else obs)
             if traj.states:
                 z = traj.states[0].obs_encoding
                 if z is not None:
@@ -183,7 +183,7 @@ class CartPoleBenchmark:
         for obs in observations[:10]:
             if obs.dim() == 1:
                 obs = obs.unsqueeze(0)
-            traj, _ = self.wm.run_with_cache(obs.unsqueeze(0) if obs.dim() == 1 else obs)
+            traj, _, _ = self.wm.run_with_cache(obs.unsqueeze(0) if obs.dim() == 1 else obs)
             if traj.states:
                 z = traj.states[0].obs_encoding
                 if z is not None:
@@ -221,7 +221,7 @@ class CartPoleBenchmark:
         obs = torch.randn(50, 4)
 
         # Get baseline trajectory
-        baseline_traj, _ = self.wm.run_with_cache(obs)
+        baseline_traj, _, _ = self.wm.run_with_cache(obs)
 
         if velocity_dims is None:
             _, velocity_dims = self.find_velocity_encoding([obs])
@@ -273,7 +273,7 @@ class CartPoleBenchmark:
 
         # Generate latent trajectory for visualization
         test_obs = torch.randn(20, 4)
-        traj, _ = self.wm.run_with_cache(test_obs)
+        traj, _, _ = self.wm.run_with_cache(test_obs)
         latent_traj = torch.stack(
             [s.obs_encoding for s in traj.states if s.obs_encoding is not None]
         )

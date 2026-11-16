@@ -123,7 +123,7 @@ class GridworldBenchmark:
         for traj_obs in trajectories[:20]:
             if traj_obs.dim() == 2:
                 traj_obs = traj_obs.unsqueeze(0)
-            traj, _ = self.wm.run_with_cache(traj_obs)
+            traj, _, _ = self.wm.run_with_cache(traj_obs)
 
             for state in traj.states:
                 z = state.obs_encoding if state.obs_encoding is not None else state.state
@@ -168,7 +168,7 @@ class GridworldBenchmark:
             # Goal info is in last 2 dimensions
             goal_signal = traj_obs[:, :, -2:].mean()
 
-            traj, _ = self.wm.run_with_cache(traj_obs)
+            traj, _, _ = self.wm.run_with_cache(traj_obs)
 
             for state in traj.states:
                 z = state.obs_encoding if state.obs_encoding is not None else state.state
@@ -218,7 +218,7 @@ class GridworldBenchmark:
         )[0]
 
         # Baseline
-        baseline_traj, _ = self.wm.run_with_cache(test_traj.unsqueeze(0))
+        baseline_traj, _, _ = self.wm.run_with_cache(test_traj.unsqueeze(0))
 
         if not memory_dims:
             return 0.0
