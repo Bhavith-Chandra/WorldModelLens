@@ -197,7 +197,7 @@ class WorldModelEnv:
 
         if self._cache is not None:
             try:
-                traj, cache = self.wm.run_with_cache(
+                _, _, cache = self.wm.run_with_cache(
                     obs_tensor.unsqueeze(0),
                     actions=torch.tensor([action]).to(self._device).unsqueeze(0)
                     if action.shape

@@ -29,7 +29,7 @@ class PredictionVisualizer:
 
         # Get predictions and ground truth
         obs = torch.randn(10, 3, 64, 64)
-        traj, cache = world_model.run_with_cache(obs)
+        traj, _, cache = world_model.run_with_cache(obs)
 
         # Compare reconstructions
         comp = viz.compare_reconstructions(traj, cache, observations=obs)

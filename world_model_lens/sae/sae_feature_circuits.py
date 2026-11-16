@@ -239,7 +239,7 @@ class SAEFeatureCircuitAnalyzer:
         This is a relatively expensive operation; it runs `wm.run_with_cache()`
         on the provided observations and performs ablations per active feature.
         """
-        traj, cache = self.wm.run_with_cache(observations, actions)
+        _, _, cache = self.wm.run_with_cache(observations, actions)
 
         clean_acts = self._collect_clean_acts(cache)
 

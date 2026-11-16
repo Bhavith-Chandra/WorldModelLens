@@ -142,17 +142,14 @@ class LatentMetrics:
             actions: Actions.
 
         Returns:
-            MSE reconstruction error.
+            Mean squared error between the decoder's reconstructions and ``obs``.
         """
-        traj, cache = wm.run_with_cache(obs, actions)
+        _, _, cache = wm.run_with_cache(obs, actions)
+        if "reconstruction" not in cache.component_names:
+            raise ValueError("The world model has no decoder, so it has no reconstruction error.")
 
-        try:
-            recon = cache["reconstruction"]
-            orig = cache["observation"]
-            mse = functional.mse_loss(recon, orig)
-            return float(mse.item())
-        except Exception:
-            return float("inf")
+        recon = cache["reconstruction"]
+        return float(functional.mse_loss(recon, obs.to(recon).reshape(recon.shape)))
 
     @staticmethod
     def latent_variance(latents: torch.Tensor) -> float:

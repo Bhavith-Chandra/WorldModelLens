@@ -76,6 +76,13 @@ class TemporalAttributionMap:
         self.wm = world_model
         self._cache = {}
 
+    def _run(
+        self, observations: torch.Tensor, actions: Any, hooks: Optional[List[HookPoint]] = None
+    ) -> Any:
+        with self.wm.hook_registry.temp_hooks(hooks or []):
+            _, latent_traj, _ = self.wm.run_with_cache(observations, actions)
+        return latent_traj
+
     def compute_influence_matrix(
         self,
         observations: torch.Tensor,
@@ -97,7 +104,7 @@ class TemporalAttributionMap:
         T = observations.shape[0]
 
         # Get baseline
-        baseline_traj, _ = self.wm.run_with_cache(observations, actions)
+        baseline_traj = self._run(observations, actions)
 
         influence = np.zeros((T, T))
 
@@ -109,9 +116,7 @@ class TemporalAttributionMap:
                 stage="post",
                 fn=_make_ablate_hook(source_t),
             )
-            intervened_traj = self.wm.run_with_hooks(
-                observations, actions, fwd_hooks=[hp],
-            )
+            intervened_traj = self._run(observations, actions, [hp])
 
             # Measure effect at each target
             for target_t in range(T):
@@ -149,16 +154,14 @@ class TemporalAttributionMap:
         """
         T = observations.shape[0]
 
-        baseline_traj, _ = self.wm.run_with_cache(observations, actions)
+        baseline_traj = self._run(observations, actions)
 
         hp = HookPoint(
             name="z_posterior",
             stage="post",
             fn=_make_ablate_hook(source_t),
         )
-        intervened_traj = self.wm.run_with_hooks(
-            observations, actions, fwd_hooks=[hp],
-        )
+        intervened_traj = self._run(observations, actions, [hp])
 
         influences = []
 
@@ -187,7 +190,7 @@ class TemporalAttributionMap:
         """
         T = observations.shape[0]
 
-        baseline_traj, _ = self.wm.run_with_cache(observations, actions)
+        baseline_traj = self._run(observations, actions)
 
         target_baseline = self._extract_metric(baseline_traj, target_t, "state_norm")
 
@@ -199,9 +202,7 @@ class TemporalAttributionMap:
                 stage="post",
                 fn=_make_ablate_hook(source_t),
             )
-            intervened_traj = self.wm.run_with_hooks(
-                observations, actions, fwd_hooks=[hp],
-            )
+            intervened_traj = self._run(observations, actions, [hp])
 
             intervened_val = self._extract_metric(intervened_traj, target_t, "state_norm")
             influences.append(abs(target_baseline - intervened_val))
@@ -228,7 +229,7 @@ class TemporalAttributionMap:
         Returns:
             Dict mapping intermediate timesteps to their importance
         """
-        baseline_traj, _ = self.wm.run_with_cache(observations, actions)
+        baseline_traj = self._run(observations, actions)
 
         baseline_target = self._extract_metric(baseline_traj, target_t, "state_norm")
 
@@ -241,9 +242,7 @@ class TemporalAttributionMap:
                 stage="post",
                 fn=_make_multi_ablate_hook(source_t, mid_t),
             )
-            intervened_traj = self.wm.run_with_hooks(
-                observations, actions, fwd_hooks=[hp],
-            )
+            intervened_traj = self._run(observations, actions, [hp])
 
             intervened_val = self._extract_metric(intervened_traj, target_t, "state_norm")
             path_importance[mid_t] = abs(baseline_target - intervened_val)
