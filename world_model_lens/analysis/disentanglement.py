@@ -10,6 +10,8 @@ Metrics:
 - SAP: Separated Attribute Predictability
 """
 
+from __future__ import annotations
+
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -291,7 +293,7 @@ class DisentanglementAnalyzer:
 
     def from_cache(
         self,
-        cache: "ActivationCache",
+        cache: ActivationCache,
         latent_key: str = "z",
         factors: torch.Tensor | None = None,
     ) -> DisentanglementResult:

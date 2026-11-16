@@ -57,6 +57,8 @@ dev = [
     "hatch",
     "flake8",
 ]
+collab = ["zarr"]
+demo = ["gradio"]
 docs = [
     "sphinx",
     "sphinx-autodoc-typehints",

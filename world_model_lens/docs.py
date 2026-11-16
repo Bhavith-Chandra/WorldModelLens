@@ -58,13 +58,6 @@ Level 3 → Trajectory (sequence segment)
 Workflow: Find behavior (L3) -> Examine state (L2) -> Find mechanism (L1)
 """
 
-from world_model_lens import HookedWorldModel, WorldModelConfig
-from world_model_lens.backends import ToyVideoAdapter
-from world_model_lens.causal import CausalEffectEstimator, TrajectoryAttribution
-from world_model_lens.visualization import LatentTrajectoryPlotter
-from world_model_lens.benchmarks import CartPoleBenchmark
-
-__doc__ = __doc__
 
 
 def quickstart():
