@@ -154,6 +154,12 @@ class HookedWorldModel:
 
         return transition(state, action, posterior)
 
+    def _latent_logprobs(self, logits: torch.Tensor) -> torch.Tensor:
+        latent_logprobs = getattr(self.adapter, "latent_logprobs", None)
+        if callable(latent_logprobs):
+            return latent_logprobs(logits)
+        return torch.log_softmax(logits.float(), dim=-1)
+
     def _call_decode(
         self,
         state: torch.Tensor,
@@ -297,6 +303,7 @@ class HookedWorldModel:
         names_filter: Optional[set] = None,
         device: Optional[torch.device] = None,
         store_logits: bool = True,
+        sample_latents: bool = False,
     ) -> Tuple[WorldTrajectory, LatentTrajectory, ActivationCache]:
         """Run forward pass with full activation caching.
 
@@ -313,6 +320,14 @@ class HookedWorldModel:
             names_filter: Optional list of component names to cache
             device: Target device for outputs
             store_logits: Whether to store logits (for probing)
+            sample_latents: For adapters with categorical latents, sample z from
+                the posterior instead of taking its mode.
+
+        Each step t runs ``encode(obs_t, h_t)``, then ``transition(h_t, z_t, a_t)``.
+        The states returned for step t hold h_t, the state that observed obs_t.
+        For adapters with ``capabilities.categorical_latents``, the cache holds
+        posterior and prior logits, ``z`` holds the latent fed to the transition,
+        and the latent states hold probabilities.
 
         Returns:
             Tuple of (WorldTrajectory, LatentTrajectory, ActivationCache)
@@ -362,100 +377,53 @@ class HookedWorldModel:
             return world_traj, latent_traj, cache
 
         init_result = self.adapter.initial_state(batch_size=1, device=observations.device)
-        if isinstance(init_result, tuple):
-            h, z = init_result
-            state = h
-            z_current = z
-        else:
-            state = init_result
-            z_current = None
+        state = init_result[0] if isinstance(init_result, tuple) else init_result
         if state.dim() > 1 and state.shape[0] == 1:
             state = state.squeeze(0)
 
+        categorical = caps.categorical_latents
         last_target_obs = None
         last_target_encoding = None
 
+        def ctx(component: str, **metadata: Any) -> HookContext:
+            return HookContext(
+                timestep=t, component=component, trajectory_so_far=latent_states, metadata=metadata
+            )
+
+        def hook(component: str, tensor: torch.Tensor) -> torch.Tensor:
+            return self._apply_and_cache(component, t, tensor, ctx(component), cache, names_filter)
+
+        def batched(tensor: torch.Tensor) -> torch.Tensor:
+            return tensor.unsqueeze(0) if tensor.dim() == 1 else tensor
+
         for t in range(T):
             obs = observations[t]
-            action = None
-            if actions is not None and t < len(actions):
-                action = actions[t]
+            action = actions[t] if actions is not None and t < len(actions) else None
 
-            hook_ctx = HookContext(timestep=t, component="state", trajectory_so_far=latent_states)
-            # apply hooks and cache via central helper
-            state = self._apply_and_cache("state", t, state, hook_ctx, cache, names_filter)
+            state = hook("state", state)
+            state = hook("h", state)
 
-            # Sync hooks to adapter for internal component hooking
             if hasattr(self.adapter, "hooks"):
                 self.adapter.hooks = self._hooks
             if hasattr(self.adapter, "current_timestep"):
                 self.adapter.current_timestep = t
 
-            posterior, obs_encoding = self.adapter.encode(
-                obs.unsqueeze(0), state.unsqueeze(0) if state.dim() == 1 else state
-            )
-            posterior = posterior.squeeze(0)
+            posterior, obs_encoding = self.adapter.encode(obs.unsqueeze(0), batched(state))
+            posterior = hook("z_posterior", posterior.squeeze(0))
 
-            hook_ctx_z = HookContext(
-                timestep=t, component="z_posterior", trajectory_so_far=latent_states
-            )
-            posterior = self._apply_and_cache(
-                "z_posterior", t, posterior, hook_ctx_z, cache, names_filter
-            )
+            prior = self.adapter.dynamics(batched(state))
+            prior = hook("z_prior", prior.squeeze(0) if prior.dim() > 1 else prior)
 
-            obs_encoding = obs_encoding.squeeze(0) if obs_encoding is not None else None
-
-            prior = self.adapter.dynamics(
-                state.unsqueeze(0) if state.dim() == 1 else state,
-            )
-            prior = prior.squeeze(0) if prior.dim() > 1 else prior
-
-            # cache common components via helper so hooks are applied uniformly
-            # 'h' is essentially the same as state in this wrapper
-            self._apply_and_cache("h", t, state, hook_ctx, cache, names_filter)
-            # posterior was already passed through hooks above; it has been
-            # cached by the central helper when appropriate.
-            self._apply_and_cache(
-                "z_prior",
-                t,
-                prior,
-                HookContext(timestep=t, component="z_prior", trajectory_so_far=latent_states),
-                cache,
-                names_filter,
-            )
             if obs_encoding is not None:
-                self._apply_and_cache(
-                    "observation",
-                    t,
-                    obs_encoding,
-                    HookContext(
-                        timestep=t, component="observation", trajectory_so_far=latent_states
-                    ),
-                    cache,
-                    names_filter,
-                )
+                obs_encoding = hook("observation", obs_encoding.squeeze(0))
 
-            # Dedicated hook point for KV-style cache manipulation. Some
-            # transformer-based adapters maintain a growing key/value memory
-            # that users may want to edit without re-running the whole
-            # sequence. We expose a hook component named "kv_cache" which
-            # receives the full ActivationCache and can mutate it in-place.
+            # kv_cache hooks receive the whole ActivationCache and may edit it in place.
             manager = getattr(self, "_hook_cache_manager", None)
             if manager is not None:
-                manager.apply_kv_hooks(
-                    cache,
-                    t,
-                    HookContext(timestep=t, component="kv_cache", trajectory_so_far=latent_states),
-                )
+                manager.apply_kv_hooks(cache, t, ctx("kv_cache"))
 
-            # Check for optional target encoder (e.g. for I-JEPA/JEPA models)
             if hasattr(self.adapter, "target_encode"):
-                use_cached_target = (
-                    last_target_obs is not None
-                    and obs.shape == last_target_obs.shape
-                    and torch.equal(obs, last_target_obs)
-                )
-                if use_cached_target:
+                if last_target_obs is not None and torch.equal(obs, last_target_obs):
                     target_encoding = last_target_encoding
                 else:
                     target_encoding = self.adapter.target_encode(obs.unsqueeze(0))
@@ -463,181 +431,110 @@ class HookedWorldModel:
                     target_encoding = target_encoding.squeeze(0)
                     last_target_obs = obs.detach().clone()
                     last_target_encoding = target_encoding
-                    self._apply_and_cache(
-                        "target_encoding",
-                        t,
-                        target_encoding,
-                        HookContext(
-                            timestep=t,
-                            component="target_encoding",
-                            trajectory_so_far=latent_states,
-                        ),
-                        cache,
-                        names_filter,
-                    )
+                    hook("target_encoding", target_encoding)
+
+            if categorical:
+                z = hook("z", self.adapter.sample_z(posterior, sample=sample_latents))
+            else:
+                z = posterior
 
             reward_pred = None
             if caps.has_reward_head:
                 try:
-                    reward_pred = self.adapter.predict_reward(
-                        state.unsqueeze(0) if state.dim() == 1 else state,
-                        posterior.unsqueeze(0) if posterior.dim() == 1 else posterior,
-                    )
-                    if reward_pred is not None:
-                        self._apply_and_cache(
-                            "reward",
-                            t,
-                            reward_pred.squeeze(0),
-                            HookContext(
-                                timestep=t, component="reward", trajectory_so_far=latent_states
-                            ),
-                            cache,
-                            names_filter,
-                        )
+                    reward_pred = self.adapter.predict_reward(batched(state), batched(z))
                 except NotImplementedError:
                     pass
+                if reward_pred is not None:
+                    reward_pred = hook("reward", reward_pred.squeeze(0))
 
             value_pred = None
             if caps.has_critic:
                 try:
                     if hasattr(self.adapter, "critic_forward"):
-                        # Newer base-adapter implementations expose
-                        # critic_forward(h, z), so we pass state/posterior.
-                        value_pred = self.adapter.critic_forward(
-                            state.unsqueeze(0) if state.dim() == 1 else state,
-                            posterior.unsqueeze(0) if posterior.dim() == 1 else posterior,
-                        )
+                        value_pred = self.adapter.critic_forward(batched(state), batched(z))
                     else:
-                        # Legacy generic adapters expose predict_value(state, action),
-                        # so this fallback intentionally follows that older calling
-                        # convention rather than critic_forward's (h, z) API.
-                        value_pred = self.adapter.predict_value(
-                            state.unsqueeze(0) if state.dim() == 1 else state,
-                            action,
-                        )
-                    if value_pred is not None:
-                        self._apply_and_cache(
-                            "value",
-                            t,
-                            value_pred.squeeze(0),
-                            HookContext(
-                                timestep=t, component="value", trajectory_so_far=latent_states
-                            ),
-                            cache,
-                            names_filter,
-                        )
+                        # Legacy generic adapters expose predict_value(state, action).
+                        value_pred = self.adapter.predict_value(batched(state), action)
                 except NotImplementedError:
                     pass
+                if value_pred is not None:
+                    value_pred = hook("value", value_pred.squeeze(0))
 
-            kl = None
-            if posterior.shape == prior.shape and posterior.dim() > 1:
-                p = posterior.clamp(min=1e-8)
-                q = prior.clamp(min=1e-8)
-                p = p / p.sum(dim=-1, keepdim=True)
-                q = q / q.sum(dim=-1, keepdim=True)
-                kl = (p * (p.log() - q.log())).sum(dim=-1)
-                # allow hooks to observe/modify KL and centralize caching
-                self._apply_and_cache(
-                    "kl",
-                    t,
-                    kl,
-                    HookContext(timestep=t, component="kl", trajectory_so_far=latent_states),
-                    cache,
-                    names_filter,
-                )
+            if categorical:
+                posterior_logp = self._latent_logprobs(posterior)
+                prior_logp = self._latent_logprobs(prior)
+                kl = (posterior_logp.exp() * (posterior_logp - prior_logp)).sum(dim=-1)
+                hook("kl", kl)
+                posterior_probs, prior_probs = posterior_logp.exp(), prior_logp.exp()
+            else:
+                if posterior.shape == prior.shape and posterior.dim() > 1:
+                    p = posterior.clamp(min=1e-8)
+                    q = prior.clamp(min=1e-8)
+                    p = p / p.sum(dim=-1, keepdim=True)
+                    q = q / q.sum(dim=-1, keepdim=True)
+                    hook("kl", (p * (p.log() - q.log())).sum(dim=-1))
+                posterior_probs, prior_probs = posterior, prior
 
             if caps.has_decoder:
                 try:
-                    recon = self._call_decode(
-                        state.unsqueeze(0) if state.dim() == 1 else state,
-                        posterior.unsqueeze(0) if posterior.dim() == 1 else posterior,
-                    )
-                    if recon is not None:
-                        self._apply_and_cache(
-                            "reconstruction",
-                            t,
-                            recon.squeeze(0),
-                            HookContext(
-                                timestep=t,
-                                component="reconstruction",
-                                trajectory_so_far=latent_states,
-                            ),
-                            cache,
-                            names_filter,
-                        )
+                    recon = self._call_decode(batched(state), batched(z))
                 except NotImplementedError:
-                    pass
+                    recon = None
+                if recon is not None:
+                    hook("reconstruction", recon.squeeze(0))
 
+            if action is not None and caps.uses_actions:
+                action = self._hooks.apply("action", t, action, ctx("action"))
             action_for_transition = action if caps.uses_actions else None
-            if action_for_transition is not None:
-                hook_ctx_a = HookContext(
-                    timestep=t, component="action", trajectory_so_far=latent_states
-                )
-                action_for_transition = self._hooks.apply(
-                    "action", t, action_for_transition, hook_ctx_a
-                )
-                action = action_for_transition
 
             next_state = self._call_transition(
-                state.unsqueeze(0) if state.dim() == 1 else state,
-                posterior.unsqueeze(0) if posterior.dim() == 1 else posterior,
-                action_for_transition,
+                batched(state), batched(z), action_for_transition
+            ).squeeze(0)
+            next_state = self._hooks.apply(
+                "transition",
+                t,
+                next_state,
+                ctx(
+                    "transition",
+                    s_t=next_state.clone(),
+                    s_prev=state.clone(),
+                    a_t=action_for_transition,
+                    z_t=z,
+                ),
             )
-            state = next_state.squeeze(0)
-
-            # Apply transition hook for causality analysis
-            transition_ctx = HookContext(
-                timestep=t,
-                component="transition",
-                trajectory_so_far=latent_states,
-                metadata={
-                    "s_t": state.clone(),  # Current state after transition
-                    "s_prev": world_states[-1].state if world_states else None,  # Previous state
-                    "a_t": action_for_transition,  # Action used
-                    "z_t": posterior,  # Latent encoding
-                },
-            )
-            state = self._hooks.apply("transition", t, state, transition_ctx)
 
             action_for_state = action.clone() if action is not None else None
             action_source = None
             if action_for_state is not None:
                 from world_model_lens.core.world_state import ActionSource
 
-                action_source = ActionSource(
-                    source_type="externally_provided",
-                    temperature=None,
+                action_source = ActionSource(source_type="externally_provided", temperature=None)
+
+            world_states.append(
+                WorldState(
+                    state=state.clone(),
+                    timestep=t,
+                    action=action_for_state,
+                    action_source=action_source,
+                    reward_pred=reward_pred.clone() if reward_pred is not None else None,
+                    value_pred=value_pred.clone() if value_pred is not None else None,
+                    obs_encoding=obs_encoding.clone() if obs_encoding is not None else None,
                 )
-
-            # Build both public trajectory views at the same timestep so
-            # environment-facing and model-facing consumers stay aligned.
-            world_state = WorldState(
-                state=state.clone(),
-                timestep=t,
-                action=action_for_state,
-                action_source=action_source,
-                reward_pred=reward_pred.squeeze(0).clone() if reward_pred is not None else None,
-                value_pred=value_pred.squeeze(0).clone() if value_pred is not None else None,
-                obs_encoding=obs_encoding.clone() if obs_encoding is not None else None,
             )
-            world_states.append(world_state)
-
-            latent_state = LatentState(
-                h_t=state.clone(),
-                z_posterior=posterior.clone(),
-                z_prior=prior.clone(),
-                timestep=t,
-                action=action_for_state.clone() if action_for_state is not None else None,
-                reward_pred=reward_pred.squeeze(0).clone() if reward_pred is not None else None,
-                cont_pred=None,
-                value_pred=value_pred.squeeze(0).clone() if value_pred is not None else None,
-                actor_logits=None,
-                obs_encoding=obs_encoding.clone() if obs_encoding is not None else None,
+            latent_states.append(
+                LatentState(
+                    h_t=state.clone(),
+                    z_posterior=posterior_probs.clone(),
+                    z_prior=prior_probs.clone(),
+                    timestep=t,
+                    action=action_for_state.clone() if action_for_state is not None else None,
+                    reward_pred=reward_pred.clone() if reward_pred is not None else None,
+                    value_pred=value_pred.clone() if value_pred is not None else None,
+                    obs_encoding=obs_encoding.clone() if obs_encoding is not None else None,
+                )
             )
-            latent_states.append(latent_state)
 
-            if z_current is not None:
-                z_current = posterior
+            state = next_state
 
         world_traj = WorldTrajectory(
             states=world_states,
@@ -874,6 +771,7 @@ class HookedWorldModel:
             "h",
             "z_posterior",
             "z_prior",
+            "z",
             "observation",
             "target_encoding",
             "kl",

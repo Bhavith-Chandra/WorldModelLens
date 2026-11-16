@@ -639,6 +639,7 @@ class DreamerV3Adapter(BaseModelAdapter):
         self._capabilities = WorldModelCapabilities(
             has_decoder=True, has_reward_head=True, has_continue_head=True,
             has_actor=True, has_critic=True, uses_actions=True, is_rl_trained=True,
+            categorical_latents=True,
         )
 
     # ── helpers ──────────────────────────────────────────────────────────────
