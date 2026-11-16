@@ -27,6 +27,8 @@ class LatentState:
         metadata: Additional arbitrary data.
         multimodal_channels: Dict mapping channel name to tensor for multimodal models.
             Supports 'vision', 'proprio', 'language', 'audio', and custom channels.
+        z: Latent fed to the transition at this timestep, when it differs from
+            z_posterior (for example a sample from categorical posterior logits).
     """
 
     h_t: torch.Tensor
@@ -42,6 +44,7 @@ class LatentState:
     obs_encoding: torch.Tensor | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
     multimodal_channels: dict[str, torch.Tensor] = field(default_factory=dict)
+    z: torch.Tensor | None = None
 
     @property
     def flat(self) -> torch.Tensor:
@@ -109,6 +112,7 @@ class LatentState:
             "value_pred",
             "actor_logits",
             "obs_encoding",
+            "z",
         ]:
             val = getattr(self, attr)
             if isinstance(val, torch.Tensor):
@@ -135,6 +139,7 @@ class LatentState:
             "value_pred",
             "actor_logits",
             "obs_encoding",
+            "z",
         ]:
             val = getattr(self, attr)
             if isinstance(val, torch.Tensor):
